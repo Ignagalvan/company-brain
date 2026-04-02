@@ -4,6 +4,7 @@ import uuid
 from sqlalchemy import Float, cast, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.models.document import Document
 from src.models.document_chunk import DocumentChunk
 from src.services.embedding_service import generate_embeddings
 
@@ -36,8 +37,10 @@ async def search_chunks(
             DocumentChunk.document_id,
             DocumentChunk.chunk_index,
             DocumentChunk.content,
+            Document.filename,
             distance_col,
         )
+        .join(Document, DocumentChunk.document_id == Document.id)
         .where(DocumentChunk.organization_id == organization_id)
         .where(DocumentChunk.embedding.is_not(None))
         .order_by(distance_col)
@@ -53,6 +56,7 @@ async def search_chunks(
             "document_id": row.document_id,
             "chunk_index": row.chunk_index,
             "content": row.content,
+            "filename": row.filename,
             "distance": round(float(row.distance), 6),
         }
         for row in rows

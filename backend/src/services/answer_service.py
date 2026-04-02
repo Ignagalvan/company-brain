@@ -31,7 +31,7 @@ def _get_client() -> AsyncOpenAI:
 def _build_context(chunks: list[dict]) -> str:
     parts = []
     for i, chunk in enumerate(chunks, start=1):
-        parts.append(f"[{i}] {chunk['content']}")
+        parts.append(f"[{i}] (Documento: {chunk['filename']}, fragmento {chunk['chunk_index']})\n{chunk['content']}")
     return "\n\n".join(parts)
 
 

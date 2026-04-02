@@ -11,6 +11,7 @@ class AskRequest(BaseModel):
 class Source(BaseModel):
     chunk_id: uuid.UUID
     document_id: uuid.UUID
+    filename: str
     chunk_index: int
     content: str
     distance: float
