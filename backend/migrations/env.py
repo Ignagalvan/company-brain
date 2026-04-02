@@ -9,6 +9,9 @@ from alembic import context
 from src.config import settings
 from src.database import Base
 import src.models.document  # noqa: F401
+import src.models.document_chunk  # noqa: F401
+
+
 
 
 config = context.config

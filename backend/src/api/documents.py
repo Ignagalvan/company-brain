@@ -36,7 +36,7 @@ async def upload_document(
         while chunk := await file.read(1024 * 1024):  # 1 MB chunks
             await out.write(chunk)
 
-    return await document_service.upload_document(db, organization_id, unique_filename)
+    return await document_service.upload_document(db, organization_id, unique_filename, file_path=dest)
 
 
 @router.post("", response_model=DocumentResponse, status_code=201)

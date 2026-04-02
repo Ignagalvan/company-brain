@@ -1,17 +1,38 @@
 import uuid
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.document import Document
 from src.schemas.document import DocumentCreate
+from src.services import chunking_service, pdf_service
 
 
-async def upload_document(db: AsyncSession, organization_id: uuid.UUID, filename: str) -> Document:
-    document = Document(organization_id=organization_id, filename=filename, status="uploaded")
+async def upload_document(
+    db: AsyncSession,
+    organization_id: uuid.UUID,
+    filename: str,
+    file_path: Path | None = None,
+) -> Document:
+    extracted_text: str | None = None
+    if file_path is not None and filename.lower().endswith(".pdf"):
+        extracted_text = pdf_service.extract_text(file_path)
+
+    document = Document(
+        organization_id=organization_id,
+        filename=filename,
+        status="uploaded",
+        extracted_text=extracted_text,
+    )
     db.add(document)
     await db.commit()
     await db.refresh(document)
+
+    if extracted_text:
+        await chunking_service.create_chunks(db, document.id, organization_id, extracted_text)
+        await db.commit()
+
     return document
 
 

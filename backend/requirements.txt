@@ -2,3 +2,6 @@ fastapi[standard]
 pydantic-settings
 sqlalchemy[asyncio]
 asyncpg
+aiofiles
+pypdf
+pytest

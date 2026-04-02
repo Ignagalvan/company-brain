@@ -13,6 +13,7 @@ class DocumentResponse(BaseModel):
     organization_id: uuid.UUID
     filename: str
     status: str
+    extracted_text: str | None
     created_at: datetime
 
     model_config = {"from_attributes": True}

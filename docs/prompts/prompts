@@ -1,0 +1,22 @@
+Usá como fuente de verdad:
+- README.md
+- docs/project-context.md
+- docs/architecture.md
+- docs/decisions.md
+
+Reglas:
+- no sobreingeniería
+- no agregar features no pedidos
+- no rediseñar arquitectura sin permiso
+- cambios mínimos y consistentes
+- respetar estructura existente
+- usar async cuando corresponda
+- no romper código existente
+
+Modo de trabajo:
+1. analizar
+2. proponer
+3. implementar
+4. validar
+
+Siempre responder de forma concreta.
