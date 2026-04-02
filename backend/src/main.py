@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from src.api.documents import router as documents_router
+from src.api.retrieval import router as retrieval_router
 from src.config import settings
 
 
@@ -14,6 +15,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
 
 app.include_router(documents_router)
+app.include_router(retrieval_router)
 
 
 @app.get("/health")
