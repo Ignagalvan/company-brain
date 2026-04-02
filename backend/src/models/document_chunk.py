@@ -1,10 +1,13 @@
 import uuid
 from datetime import datetime, timezone
+from typing import Optional
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import DateTime, ForeignKey, Integer, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
+from src.config import settings
 from src.database import Base
 
 
@@ -21,6 +24,9 @@ class DocumentChunk(Base):
     organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    embedding: Mapped[Optional[list]] = mapped_column(
+        Vector(settings.embedding_dimensions), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )

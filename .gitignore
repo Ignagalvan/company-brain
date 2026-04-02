@@ -2,12 +2,15 @@
 __pycache__/
 *.pyc
 
-# Virtual environment
+# Virtual env
 .venv/
 
-# Environment variables
+# Env
 .env
 backend/.env
+
+# Uploads (IMPORTANTE)
+backend/uploads/
 
 # OS
 .DS_Store

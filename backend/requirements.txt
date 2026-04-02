@@ -4,4 +4,6 @@ sqlalchemy[asyncio]
 asyncpg
 aiofiles
 pypdf
+openai
+pgvector
 pytest

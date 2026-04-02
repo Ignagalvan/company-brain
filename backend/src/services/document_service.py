@@ -4,9 +4,13 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import logging
+
 from src.models.document import Document
 from src.schemas.document import DocumentCreate
-from src.services import chunking_service, pdf_service
+from src.services import chunking_service, embedding_service, pdf_service
+
+logger = logging.getLogger(__name__)
 
 
 async def upload_document(
@@ -30,7 +34,16 @@ async def upload_document(
     await db.refresh(document)
 
     if extracted_text:
-        await chunking_service.create_chunks(db, document.id, organization_id, extracted_text)
+        chunks = await chunking_service.create_chunks(db, document.id, organization_id, extracted_text)
+        await db.flush()
+
+        try:
+            vectors = await embedding_service.generate_embeddings([c.content for c in chunks])
+            for chunk, vector in zip(chunks, vectors):
+                chunk.embedding = vector
+        except Exception as e:
+            logger.error("Embeddings fallaron para documento %s: %s", document.id, e)
+
         await db.commit()
 
     return document
