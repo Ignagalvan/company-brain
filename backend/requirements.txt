@@ -6,4 +6,5 @@ aiofiles
 pypdf
 openai
 pgvector
+alembic
 pytest

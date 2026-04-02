@@ -12,6 +12,12 @@ backend/.env
 # Uploads (IMPORTANTE)
 backend/uploads/
 
+# Test artifacts
+.pytest_cache/
+
+# Logs
+*.log
+
 # OS
 .DS_Store
 Thumbs.db

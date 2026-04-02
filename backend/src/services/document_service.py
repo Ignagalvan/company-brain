@@ -1,10 +1,9 @@
+import logging
 import uuid
 from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-
-import logging
 
 from src.models.document import Document
 from src.schemas.document import DocumentCreate
