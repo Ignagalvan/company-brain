@@ -6,24 +6,24 @@ import { ChatMessage } from './ChatMessage'
 
 interface ChatAreaProps {
   conversation: Conversation | null
-  asking: boolean
-  askError: string
-  onAsk: (query: string) => void
+  sending: boolean
+  sendError: string
+  onSend: (content: string) => void
 }
 
-export function ChatArea({ conversation, asking, askError, onAsk }: ChatAreaProps) {
-  const [query, setQuery] = useState('')
+export function ChatArea({ conversation, sending, sendError, onSend }: ChatAreaProps) {
+  const [input, setInput] = useState('')
   const chatEndRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [conversation?.messages.length, asking])
+  }, [conversation?.messages.length, sending])
 
   function handleSubmit() {
-    const q = query.trim()
-    if (!q || asking) return
-    onAsk(q)
-    setQuery('')
+    const content = input.trim()
+    if (!content || sending) return
+    onSend(content)
+    setInput('')
   }
 
   const isEmpty = !conversation || conversation.messages.length === 0
@@ -55,8 +55,8 @@ export function ChatArea({ conversation, asking, askError, onAsk }: ChatAreaProp
           </div>
         )}
 
-        {/* Typing indicator */}
-        {asking && (
+        {/* Loading indicator */}
+        {sending && (
           <div className="max-w-3xl mx-auto mt-6 flex justify-start">
             <div className="bg-white border border-slate-200 rounded-2xl rounded-tl-sm shadow-sm px-5 py-3.5">
               <div className="flex items-center gap-1.5">
@@ -73,25 +73,25 @@ export function ChatArea({ conversation, asking, askError, onAsk }: ChatAreaProp
 
       {/* Input bar */}
       <div className="shrink-0 bg-white border-t border-slate-100 px-8 py-4">
-        {askError && (
-          <p className="text-[11px] text-red-500 mb-2">{askError}</p>
+        {sendError && (
+          <p className="text-[11px] text-red-500 mb-2">{sendError}</p>
         )}
         <div className="flex gap-3 max-w-3xl mx-auto">
           <input
             type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}
             placeholder="Hacé una pregunta sobre tus documentos…"
-            disabled={asking}
+            disabled={sending}
             className="flex-1 px-4 py-3 border border-slate-200 rounded-xl text-sm text-slate-900 placeholder:text-slate-400 bg-slate-50 focus:outline-none focus:ring-2 focus:ring-slate-200 disabled:opacity-60 transition"
           />
           <button
             onClick={handleSubmit}
-            disabled={!query.trim() || asking}
+            disabled={!input.trim() || sending}
             className="px-5 py-3 bg-slate-900 text-white text-xs font-semibold rounded-xl hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
           >
-            Consultar
+            {sending ? 'Consultando…' : 'Consultar'}
           </button>
         </div>
       </div>

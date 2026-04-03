@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { Sidebar } from './components/Sidebar'
 import { ChatArea } from './components/ChatArea'
@@ -9,28 +9,45 @@ import { Conversation, Message, UploadedDoc } from './types'
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
 const ORG_ID = process.env.NEXT_PUBLIC_ORG_ID ?? '00000000-0000-0000-0000-000000000001'
 
-function newConversation(): Conversation {
-  return { id: Date.now().toString(), title: 'Nueva conversación', messages: [] }
+const HEADERS = {
+  'Content-Type': 'application/json',
+  'X-Organization-Id': ORG_ID,
 }
 
 export default function AppPage() {
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [activeConvId, setActiveConvId] = useState<string | null>(null)
   const [uploadedDocs, setUploadedDocs] = useState<UploadedDoc[]>([])
-  const [asking, setAsking] = useState(false)
-  const [askError, setAskError] = useState('')
+  const [sending, setSending] = useState(false)
+  const [sendError, setSendError] = useState('')
 
   const activeConv = conversations.find(c => c.id === activeConvId) ?? null
 
-  // Don't create the conversation yet — it's created in handleAsk on first message.
+  // Load conversations on mount
+  useEffect(() => {
+    fetch(`${API_URL}/conversations`, { headers: HEADERS })
+      .then(r => r.ok ? r.json() : [])
+      .then((data: Omit<Conversation, 'messages'>[]) => {
+        setConversations(data.map(c => ({ ...c, messages: [] })))
+      })
+      .catch(() => {})
+  }, [])
+
   function handleNewConversation() {
     setActiveConvId(null)
-    setAskError('')
+    setSendError('')
   }
 
-  function handleSelectConversation(id: string) {
+  async function handleSelectConversation(id: string) {
     setActiveConvId(id)
-    setAskError('')
+    setSendError('')
+
+    try {
+      const res = await fetch(`${API_URL}/conversations/${id}`, { headers: HEADERS })
+      if (!res.ok) return
+      const data: Conversation = await res.json()
+      setConversations(prev => prev.map(c => c.id === id ? data : c))
+    } catch {}
   }
 
   function handleDeleteConversation(id: string) {
@@ -42,58 +59,56 @@ export default function AppPage() {
     setUploadedDocs(prev => [...prev, doc])
   }
 
-  async function handleAsk(query: string) {
-    // Ensure active conversation
-    let convId = activeConvId
-    if (!convId) {
-      const conv = newConversation()
-      setConversations(prev => [conv, ...prev])
-      convId = conv.id
-      setActiveConvId(convId)
-    }
-
-    const userMsg: Message = { id: Date.now(), type: 'user', content: query }
-
-    // Add user message + update title on first message
-    setConversations(prev => prev.map(c => {
-      if (c.id !== convId) return c
-      return {
-        ...c,
-        title: c.messages.length === 0 ? query.slice(0, 45) : c.title,
-        messages: [...c.messages, userMsg],
-      }
-    }))
-
-    setAsking(true)
-    setAskError('')
+  async function handleSend(content: string) {
+    setSending(true)
+    setSendError('')
 
     try {
-      const res = await fetch(`${API_URL}/ask`, {
+      const res = await fetch(`${API_URL}/conversations/messages`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Organization-Id': ORG_ID,
-        },
-        body: JSON.stringify({ query, top_k: 5 }),
+        headers: HEADERS,
+        body: JSON.stringify({
+          conversation_id: activeConvId ?? null,
+          content,
+        }),
       })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = await res.json()
 
-      const sysMsg: Message = {
-        id: Date.now() + 1,
-        type: 'system',
-        content: data.answer,
-        sources: data.sources,
+      if (!res.ok) {
+        setSendError(res.status === 502
+          ? 'No se pudo generar una respuesta. Intentá de nuevo.'
+          : 'Error al enviar el mensaje.')
+        return
       }
 
-      setConversations(prev => prev.map(c => {
-        if (c.id !== convId) return c
-        return { ...c, messages: [...c.messages, sysMsg] }
-      }))
+      const assistantMsg: Message = await res.json()
+      const convId = assistantMsg.conversation_id
+
+      // Fetch full conversation to get consistent state (user + assistant messages)
+      const convRes = await fetch(`${API_URL}/conversations/${convId}`, { headers: HEADERS })
+      const fullConv: Conversation | null = convRes.ok ? await convRes.json() : null
+
+      setConversations(prev => {
+        const exists = prev.find(c => c.id === convId)
+
+        if (!exists) {
+          const newConv: Conversation = fullConv ?? {
+            id: convId,
+            title: content.trim().slice(0, 60) || 'Nueva conversación',
+            updated_at: assistantMsg.created_at,
+            messages: [assistantMsg],
+          }
+          return [newConv, ...prev]
+        }
+
+        const updated = fullConv ?? prev.find(c => c.id === convId)!
+        return [updated, ...prev.filter(c => c.id !== convId)]
+      })
+
+      setActiveConvId(convId)
     } catch {
-      setAskError('No se pudo obtener una respuesta. Verificá que el backend esté activo.')
+      setSendError('No se pudo conectar con el backend.')
     } finally {
-      setAsking(false)
+      setSending(false)
     }
   }
 
@@ -125,9 +140,9 @@ export default function AppPage() {
         />
         <ChatArea
           conversation={activeConv}
-          asking={asking}
-          askError={askError}
-          onAsk={handleAsk}
+          sending={sending}
+          sendError={sendError}
+          onSend={handleSend}
         />
       </div>
 

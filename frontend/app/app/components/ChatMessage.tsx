@@ -3,16 +3,11 @@
 import { useState } from 'react'
 import { Message } from '../types'
 
-function cleanFilename(raw: string): string {
-  const match = raw.match(/^[0-9a-f-]{36}_(.+)$/i)
-  return match ? match[1] : raw
-}
-
 export function ChatMessage({ msg }: { msg: Message }) {
   const [copied, setCopied] = useState(false)
-  const [showSources, setShowSources] = useState(false)
+  const [showCitations, setShowCitations] = useState(false)
 
-  if (msg.type === 'user') {
+  if (msg.role === 'user') {
     return (
       <div className="flex justify-end">
         <div className="max-w-xl bg-slate-900 text-white rounded-2xl rounded-tr-sm px-5 py-3.5">
@@ -30,7 +25,7 @@ export function ChatMessage({ msg }: { msg: Message }) {
     } catch {}
   }
 
-  const hasSources = msg.sources && msg.sources.length > 0
+  const hasCitations = msg.citations && msg.citations.length > 0
 
   return (
     <div className="flex justify-start">
@@ -54,41 +49,33 @@ export function ChatMessage({ msg }: { msg: Message }) {
           </div>
         </div>
 
-        {/* Sources toggle */}
-        {hasSources && (
+        {/* Citations toggle */}
+        {hasCitations && (
           <div className="pl-1">
             <button
-              onClick={() => setShowSources(v => !v)}
+              onClick={() => setShowCitations(v => !v)}
               className="flex items-center gap-1.5 text-[11px] font-medium text-slate-400 hover:text-slate-600 transition-colors px-1 py-0.5"
             >
-              <span className="text-[9px]">{showSources ? '▾' : '▸'}</span>
-              {showSources
+              <span className="text-[9px]">{showCitations ? '▾' : '▸'}</span>
+              {showCitations
                 ? 'Ocultar fuentes'
-                : `Ver fuentes (${msg.sources!.length})`}
+                : `Ver fuentes (${msg.citations.length})`}
             </button>
 
-            {showSources && (
+            {showCitations && (
               <div className="mt-2 space-y-1.5">
-                {msg.sources!.map((src, idx) => (
-                  <div key={src.chunk_id} className="bg-white border border-slate-100 rounded-xl px-4 py-3">
-                    <div className="flex items-center justify-between mb-1.5">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span className="shrink-0 w-4 h-4 rounded bg-slate-100 flex items-center justify-center text-[9px] font-bold text-slate-500">
-                          {idx + 1}
-                        </span>
-                        <span className="text-xs font-medium text-slate-700 truncate">
-                          {cleanFilename(src.filename)}
-                        </span>
-                        <span className="shrink-0 text-[10px] text-slate-400 bg-slate-50 border border-slate-100 px-1.5 py-px rounded-md">
-                          frag. {src.chunk_index}
-                        </span>
-                      </div>
-                      <span className="shrink-0 ml-3 text-[10px] text-slate-400 tabular-nums">
-                        {src.distance.toFixed(3)}
+                {msg.citations.map((citation, idx) => (
+                  <div key={citation.id} className="bg-white border border-slate-100 rounded-xl px-4 py-3">
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <span className="shrink-0 w-4 h-4 rounded bg-slate-100 flex items-center justify-center text-[9px] font-bold text-slate-500">
+                        {idx + 1}
+                      </span>
+                      <span className="text-[10px] text-slate-400 bg-slate-50 border border-slate-100 px-1.5 py-px rounded-md">
+                        fragmento {citation.chunk_index}
                       </span>
                     </div>
                     <p className="text-[11px] text-slate-500 leading-relaxed line-clamp-3">
-                      {src.content}
+                      {citation.content}
                     </p>
                   </div>
                 ))}
