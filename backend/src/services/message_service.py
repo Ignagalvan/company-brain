@@ -65,14 +65,21 @@ async def send_message(
         query=content,
     )
 
-    # — paso 4: generar respuesta —
+    # — paso 4: generar respuesta estructurada —
     try:
-        answer = await answer_service.generate_answer(query=content, chunks=chunks)
+        llm_result = await answer_service.generate_answer(query=content, chunks=chunks)
     except Exception as e:
         logger.error("Error al generar respuesta para conversación %s: %s", conversation_id, e)
         raise MessageProcessingError("Error al generar la respuesta del asistente") from e
 
+    answer = llm_result["answer"]
+    can_answer = llm_result["can_answer"]
+    evidence_indexes = llm_result["evidence_indexes"]  # 0-based into chunks
+
     # — paso 5: guardar mensaje assistant + citations (commit 2) —
+    # Solo citar los chunks que el LLM usó como evidencia
+    evidence_chunks = [chunks[i] for i in evidence_indexes if i < len(chunks)] if can_answer else []
+
     assistant_message = Message(
         conversation_id=conversation_id,
         organization_id=organization_id,
@@ -84,7 +91,7 @@ async def send_message(
     await db.flush()  # obtener assistant_message.id antes de crear citations
 
     citations: list[Citation] = []
-    for chunk in chunks:
+    for chunk in evidence_chunks:
         citation = Citation(
             message_id=assistant_message.id,
             chunk_id=chunk["chunk_id"],
@@ -102,6 +109,25 @@ async def send_message(
     for citation in citations:
         await db.refresh(citation)
 
+    sources_count = len(citations)
+    documents_count = len({c.document_id for c in citations})
+
+    debug = None
+    if settings.debug:
+        debug = {
+            "raw_chunks_count": len(chunks),
+            "relevant_chunks_count": len(evidence_chunks),
+            "distances": [
+                {"chunk_index": c.get("chunk_index"), "distance": round(c.get("distance", 0), 4)}
+                for c in chunks
+            ],
+            "fallback": not can_answer,
+            "fallback_reason": (
+                "no_relevant_chunks" if not chunks
+                else ("llm_validation" if not can_answer else None)
+            ),
+        }
+
     return {
         "id": assistant_message.id,
         "conversation_id": assistant_message.conversation_id,
@@ -110,17 +136,23 @@ async def send_message(
         "content": assistant_message.content,
         "model_used": assistant_message.model_used,
         "created_at": assistant_message.created_at,
+        "sources_count": sources_count,
+        "documents_count": documents_count,
+        "has_sufficient_evidence": sources_count >= 3,
+        "is_partial_answer": 0 < sources_count < 3,
+        "debug": debug,
         "citations": [
             {
                 "id": c.id,
                 "chunk_id": c.chunk_id,
                 "document_id": c.document_id,
+                "filename": evidence_chunks[i].get("filename"),
                 "content": c.content,
                 "chunk_index": c.chunk_index,
                 "distance": c.distance,
                 "created_at": c.created_at,
             }
-            for c in citations
+            for i, c in enumerate(citations)
         ],
     }
 

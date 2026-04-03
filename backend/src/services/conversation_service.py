@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.citation import Citation
 from src.models.conversation import Conversation
+from src.models.document import Document
 from src.models.message import Message
 from src.schemas.conversation import ConversationCreate
 
@@ -47,6 +48,19 @@ async def get_conversation(
     return result.scalar_one_or_none()
 
 
+async def delete_conversation(
+    db: AsyncSession,
+    organization_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+) -> bool:
+    conversation = await get_conversation(db, organization_id, conversation_id)
+    if not conversation:
+        return False
+    await db.delete(conversation)
+    await db.commit()
+    return True
+
+
 async def get_conversation_with_messages(
     db: AsyncSession,
     organization_id: uuid.UUID,
@@ -80,6 +94,17 @@ async def get_conversation_with_messages(
         for citation in citations_result.scalars().all():
             citations_by_message[citation.message_id].append(citation)
 
+    # Fetch filenames for all cited documents in one query
+    all_citations = [c for clist in citations_by_message.values() for c in clist]
+    document_ids = {c.document_id for c in all_citations}
+    filename_by_doc: dict[uuid.UUID, str] = {}
+    if document_ids:
+        doc_result = await db.execute(
+            select(Document.id, Document.filename).where(Document.id.in_(document_ids))
+        )
+        for row in doc_result.all():
+            filename_by_doc[row.id] = row.filename
+
     return {
         "id": conversation.id,
         "organization_id": conversation.organization_id,
@@ -95,11 +120,16 @@ async def get_conversation_with_messages(
                 "content": m.content,
                 "model_used": m.model_used,
                 "created_at": m.created_at,
+                "sources_count": len(citations_by_message[m.id]),
+                "documents_count": len({c.document_id for c in citations_by_message[m.id]}),
+                "has_sufficient_evidence": len(citations_by_message[m.id]) >= 3,
+                "is_partial_answer": 0 < len(citations_by_message[m.id]) < 3,
                 "citations": [
                     {
                         "id": c.id,
                         "chunk_id": c.chunk_id,
                         "document_id": c.document_id,
+                        "filename": filename_by_doc.get(c.document_id),
                         "content": c.content,
                         "chunk_index": c.chunk_index,
                         "distance": c.distance,

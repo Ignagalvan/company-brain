@@ -19,6 +19,17 @@ async def list_conversations(
     return await conversation_service.list_conversations(db, organization_id)
 
 
+@router.delete("/{conversation_id}", status_code=204)
+async def delete_conversation(
+    conversation_id: uuid.UUID,
+    organization_id: uuid.UUID = Depends(get_organization_id),
+    db: AsyncSession = Depends(get_db),
+):
+    deleted = await conversation_service.delete_conversation(db, organization_id, conversation_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+
 @router.get("/{conversation_id}", response_model=ConversationWithMessagesResponse)
 async def get_conversation(
     conversation_id: uuid.UUID,

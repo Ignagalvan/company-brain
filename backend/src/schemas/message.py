@@ -9,6 +9,7 @@ class CitationResponse(BaseModel):
     id: uuid.UUID
     chunk_id: uuid.UUID | None
     document_id: uuid.UUID
+    filename: str | None = None
     content: str
     chunk_index: int
     distance: float | None
@@ -41,5 +42,10 @@ class MessageResponse(BaseModel):
     model_used: str | None
     created_at: datetime
     citations: list[CitationResponse] = Field(default_factory=list)
+    sources_count: int = 0
+    documents_count: int = 0
+    has_sufficient_evidence: bool = False
+    is_partial_answer: bool = False
+    debug: dict | None = None
 
     model_config = {"from_attributes": True}

@@ -25,12 +25,12 @@ async def ask(
     )
 
     try:
-        answer = await answer_service.generate_answer(query=body.query, chunks=chunks)
+        result = await answer_service.generate_answer(query=body.query, chunks=chunks)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Error al generar respuesta: {e}")
 
     return AskResponse(
         query=body.query,
-        answer=answer,
+        answer=result["answer"],
         sources=[Source(**chunk) for chunk in chunks],
     )

@@ -18,7 +18,7 @@ export default function AppPage() {
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [activeConvId, setActiveConvId] = useState<string | null>(null)
   const [uploadedDocs, setUploadedDocs] = useState<UploadedDoc[]>([])
-  const [sending, setSending] = useState(false)
+  const [pendingContent, setPendingContent] = useState('')
   const [sendError, setSendError] = useState('')
 
   const activeConv = conversations.find(c => c.id === activeConvId) ?? null
@@ -29,6 +29,19 @@ export default function AppPage() {
       .then(r => r.ok ? r.json() : [])
       .then((data: Omit<Conversation, 'messages'>[]) => {
         setConversations(data.map(c => ({ ...c, messages: [] })))
+      })
+      .catch(() => {})
+  }, [])
+
+  // Load documents on mount
+  useEffect(() => {
+    fetch(`${API_URL}/documents`, { headers: HEADERS })
+      .then(r => r.ok ? r.json() : [])
+      .then((data: { id: string; filename: string }[]) => {
+        setUploadedDocs(data.map(d => ({
+          id: d.id,
+          filename: d.filename.replace(/^[0-9a-f-]{36}_/i, ''),
+        })))
       })
       .catch(() => {})
   }, [])
@@ -50,7 +63,10 @@ export default function AppPage() {
     } catch {}
   }
 
-  function handleDeleteConversation(id: string) {
+  async function handleDeleteConversation(id: string) {
+    try {
+      await fetch(`${API_URL}/conversations/${id}`, { method: 'DELETE', headers: HEADERS })
+    } catch {}
     setConversations(prev => prev.filter(c => c.id !== id))
     if (activeConvId === id) setActiveConvId(null)
   }
@@ -59,8 +75,15 @@ export default function AppPage() {
     setUploadedDocs(prev => [...prev, doc])
   }
 
+  async function handleDeleteDoc(id: string) {
+    try {
+      await fetch(`${API_URL}/documents/${id}`, { method: 'DELETE', headers: HEADERS })
+    } catch {}
+    setUploadedDocs(prev => prev.filter(d => d.id !== id))
+  }
+
   async function handleSend(content: string) {
-    setSending(true)
+    setPendingContent(content)
     setSendError('')
 
     try {
@@ -108,7 +131,7 @@ export default function AppPage() {
     } catch {
       setSendError('No se pudo conectar con el backend.')
     } finally {
-      setSending(false)
+      setPendingContent('')
     }
   }
 
@@ -137,10 +160,11 @@ export default function AppPage() {
           onSelectConversation={handleSelectConversation}
           onDeleteConversation={handleDeleteConversation}
           onDocUploaded={handleDocUploaded}
+          onDeleteDoc={handleDeleteDoc}
         />
         <ChatArea
           conversation={activeConv}
-          sending={sending}
+          pendingContent={pendingContent}
           sendError={sendError}
           onSend={handleSend}
         />

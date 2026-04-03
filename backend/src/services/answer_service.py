@@ -1,3 +1,4 @@
+import json
 import logging
 
 from openai import AsyncOpenAI
@@ -8,16 +9,19 @@ logger = logging.getLogger(__name__)
 
 _client: AsyncOpenAI | None = None
 
-NO_CONTEXT_ANSWER = "No hay suficiente información en los documentos disponibles para responder esta pregunta."
+NO_CONTEXT_ANSWER = "No se encontró información en los documentos disponibles para responder esta pregunta."
 
 SYSTEM_PROMPT = (
-    "Eres un asistente que responde preguntas usando el contexto provisto. "
-    "Debes responder SIEMPRE con la información que aparece en el contexto, aunque sea parcial o breve. "
-    "Si el contexto menciona algo relacionado con la pregunta, úsalo para responder. "
-    "Solo responde exactamente '"
-    + NO_CONTEXT_ANSWER
-    + "' si el contexto no contiene absolutamente ninguna información relacionada con la pregunta. "
-    "No inventes datos ni uses conocimiento externo al contexto."
+    "Eres un asistente que responde preguntas usando ÚNICAMENTE el contexto provisto. "
+    "Debes responder en JSON con exactamente esta estructura: "
+    '{"can_answer": boolean, "answer": string, "evidence_chunk_indexes": [números]} '
+    "REGLAS: "
+    "1. can_answer=true SOLO si el contexto contiene información que responde directamente la pregunta. "
+    "2. Si can_answer=true, answer debe ser la respuesta basada solo en el contexto. "
+    "3. Si can_answer=false, answer debe ser una cadena vacía. "
+    "4. evidence_chunk_indexes debe listar los índices (1-based) de los fragmentos usados para responder. "
+    "5. NO uses conocimiento externo. NO inventes datos. NO inferas lo que no está escrito. "
+    "Responde SOLO con el JSON, sin texto adicional."
 )
 
 
@@ -35,14 +39,44 @@ def _build_context(chunks: list[dict]) -> str:
     return "\n\n".join(parts)
 
 
-async def generate_answer(query: str, chunks: list[dict]) -> str:
+def _parse_structured_response(raw: str) -> dict:
     """
-    Construye un prompt con los chunks como contexto y llama al LLM.
-    Si no hay chunks retorna la respuesta de contexto insuficiente directamente.
-    Si OpenAI falla, relanza la excepción para que el endpoint la maneje.
+    Parse LLM JSON output. Returns a safe fallback dict on any parse failure.
     """
+    try:
+        data = json.loads(raw)
+        can_answer = bool(data.get("can_answer", False))
+        answer = str(data.get("answer", "")).strip()
+        indexes = data.get("evidence_chunk_indexes", [])
+        if not isinstance(indexes, list):
+            indexes = []
+        evidence_indexes = [int(i) for i in indexes if isinstance(i, (int, float))]
+        return {"can_answer": can_answer, "answer": answer, "evidence_indexes": evidence_indexes}
+    except Exception:
+        logger.warning("No se pudo parsear la respuesta estructurada del LLM: %r", raw[:200])
+        return {"can_answer": False, "answer": "", "evidence_indexes": []}
+
+
+async def generate_answer(query: str, chunks: list[dict]) -> dict:
+    """
+    Generates a structured answer grounded in the provided chunks.
+
+    Returns:
+        {
+            "can_answer": bool,
+            "answer": str,          # fallback string when can_answer=False
+            "evidence_indexes": list[int],  # 0-based indexes into `chunks`
+        }
+    """
+    logger.debug(
+        "Retrieval: %d chunks | distances: %s",
+        len(chunks),
+        [round(c.get("distance", 0), 4) for c in chunks],
+    )
+
     if not chunks:
-        return NO_CONTEXT_ANSWER
+        logger.info("Fallback: sin chunks disponibles")
+        return {"can_answer": False, "answer": NO_CONTEXT_ANSWER, "evidence_indexes": []}
 
     context = _build_context(chunks)
     user_message = f"Contexto:\n{context}\n\nPregunta: {query}"
@@ -55,11 +89,19 @@ async def generate_answer(query: str, chunks: list[dict]) -> str:
             {"role": "user", "content": user_message},
         ],
         temperature=0,
+        response_format={"type": "json_object"},
     )
-    llm_answer = response.choices[0].message.content or ""
+    raw = (response.choices[0].message.content or "").strip()
+    logger.debug("LLM raw output: %s", raw[:300])
 
-    if not llm_answer or llm_answer.strip() == NO_CONTEXT_ANSWER:
-        excerpts = "; ".join(f'"{c["content"][:120]}"' for c in chunks)
-        return f"En los documentos disponibles se encontró: {excerpts}."
+    result = _parse_structured_response(raw)
 
-    return llm_answer
+    if not result["can_answer"] or not result["answer"]:
+        logger.info("LLM indicó can_answer=false o respuesta vacía")
+        return {"can_answer": False, "answer": NO_CONTEXT_ANSWER, "evidence_indexes": []}
+
+    # Convert 1-based LLM indexes to 0-based chunk indexes, drop out-of-range
+    zero_based = [i - 1 for i in result["evidence_indexes"] if 1 <= i <= len(chunks)]
+    logger.debug("evidence_indexes (0-based): %s", zero_based)
+
+    return {"can_answer": True, "answer": result["answer"], "evidence_indexes": zero_based}
