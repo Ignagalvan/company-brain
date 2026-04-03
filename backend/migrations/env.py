@@ -10,6 +10,9 @@ from src.config import settings
 from src.database import Base
 import src.models.document  # noqa: F401
 import src.models.document_chunk  # noqa: F401
+import src.models.conversation  # noqa: F401
+import src.models.message  # noqa: F401
+import src.models.citation  # noqa: F401
 
 
 
