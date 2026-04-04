@@ -13,6 +13,7 @@ import src.models.document_chunk  # noqa: F401
 import src.models.conversation  # noqa: F401
 import src.models.message  # noqa: F401
 import src.models.citation  # noqa: F401
+import src.models.query_log  # noqa: F401
 
 
 

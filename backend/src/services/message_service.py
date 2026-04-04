@@ -12,7 +12,9 @@ from src.exceptions import MessageProcessingError
 from src.models.citation import Citation
 from src.models.conversation import Conversation
 from src.models.message import Message
-from src.services import answer_service, expansion_service, query_decomposition, retrieval_service
+from src.models.query_log import QueryLog
+from src.services import answer_service, evidence_scoring, expansion_service, query_decomposition, retrieval_service
+from src.services.query_classifier_service import classify_query
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +84,7 @@ async def _run_single_query(
     )
     chunks_before = sum(len(r) for r in all_results)
     chunks = _merge_chunks(list(all_results))
+    chunks = evidence_scoring.score_chunks(chunks, subquery)
 
     result = await answer_service.generate_answer(query=subquery, chunks=chunks)
 
@@ -91,6 +94,9 @@ async def _run_single_query(
         else []
     )
 
+    scores = [c["score"] for c in chunks if "score" in c]
+    coverage_score = round(sum(scores) / len(scores), 4) if scores else 0.0
+
     return {
         "subquery": subquery,
         "result": result,
@@ -99,6 +105,7 @@ async def _run_single_query(
         "chunks_before": chunks_before,
         "chunks_after": len(chunks),
         "all_chunks": chunks,
+        "coverage_score": coverage_score,
     }
 
 
@@ -126,6 +133,7 @@ def _aggregate_sub_results(subs: list[dict]) -> dict:
         return {
             "can_answer": False,
             "coverage": "none",
+            "coverage_score": 0.0,
             "answer": answer_service.NO_CONTEXT_ANSWER,
             "evidence_chunks": [],
             "supported_points": [],
@@ -153,6 +161,9 @@ def _aggregate_sub_results(subs: list[dict]) -> dict:
                 seen[cid] = chunk
     all_evidence = list(seen.values())
 
+    sub_scores = [s["coverage_score"] for s in answered if s.get("coverage_score") is not None]
+    agg_coverage_score = round(sum(sub_scores) / len(sub_scores), 4) if sub_scores else 0.0
+
     return {
         "can_answer": True,
         "coverage": coverage,
@@ -160,6 +171,7 @@ def _aggregate_sub_results(subs: list[dict]) -> dict:
         "evidence_chunks": all_evidence,
         "supported_points": [pt for s in answered for pt in s["result"]["supported_points"]],
         "missing_points": [s["subquery"] for s in unanswered],
+        "coverage_score": agg_coverage_score,
     }
 
 
@@ -200,6 +212,56 @@ async def send_message(
     db.add(user_message)
     await db.commit()
 
+    # — paso 2.5: clasificación de query — cortocircuito antes del pipeline —
+    classification = classify_query(content)
+    if classification in ("out_of_scope", "generic"):
+        _EARLY_RESPONSES = {
+            "out_of_scope": "No tengo información sobre ese tema en los documentos disponibles.",
+            "generic": "Podés hacer preguntas específicas sobre la información cargada en el sistema.",
+        }
+        early_answer = _EARLY_RESPONSES[classification]
+
+        assistant_message = Message(
+            conversation_id=conversation_id,
+            organization_id=organization_id,
+            role="assistant",
+            content=early_answer,
+            model_used=settings.chat_model,
+        )
+        db.add(assistant_message)
+        await db.commit()
+        await db.refresh(assistant_message)
+
+        try:
+            query_log = QueryLog(
+                organization_id=organization_id,
+                query=content,
+                coverage="none",
+                coverage_score=0.0,
+            )
+            db.add(query_log)
+            await db.commit()
+        except Exception as e:
+            logger.error("Error al guardar query log (early exit): %s", e)
+
+        logger.info("Query clasificada como %r — pipeline omitido.", classification)
+
+        return {
+            "id": assistant_message.id,
+            "conversation_id": assistant_message.conversation_id,
+            "organization_id": assistant_message.organization_id,
+            "role": "assistant",
+            "content": assistant_message.content,
+            "model_used": assistant_message.model_used,
+            "created_at": assistant_message.created_at,
+            "sources_count": 0,
+            "documents_count": 0,
+            "has_sufficient_evidence": False,
+            "is_partial_answer": False,
+            "debug": None,
+            "citations": [],
+        }
+
     # — paso 3+4: descomposición → expansion → retrieval → juez LLM —
     subqueries = query_decomposition.decompose_query(content)
     logger.info(
@@ -218,12 +280,14 @@ async def send_message(
             evidence_chunks = sub["evidence_chunks"]
             answer = _format_answer(sub["result"]["answer"], coverage, missing_points)
 
+            coverage_score = sub["coverage_score"]
+
             # Debug metadata
             reformulations = sub["reformulations"]
             chunks_before_dedup = sub["chunks_before"]
             chunks_after_dedup = sub["chunks_after"]
             debug_distances = [
-                {"chunk_index": c.get("chunk_index"), "distance": round(c.get("distance", 0), 4)}
+                {"chunk_index": c.get("chunk_index"), "distance": round(c.get("distance", 0), 4), "score": c.get("score")}
                 for c in sub["all_chunks"]
             ]
             debug_sub_results = None
@@ -248,12 +312,14 @@ async def send_message(
                         "chunks_before": 0,
                         "chunks_after": 0,
                         "all_chunks": [],
+                        "coverage_score": 0.0,
                     })
 
             agg = _aggregate_sub_results(subs)
 
             can_answer = agg["can_answer"]
             coverage = agg["coverage"]
+            coverage_score = agg.get("coverage_score", 0.0)
             supported_points = agg["supported_points"]
             missing_points = agg["missing_points"]
             evidence_chunks = agg["evidence_chunks"]
@@ -268,6 +334,7 @@ async def send_message(
                 {
                     "subquery": s["subquery"],
                     "coverage": s["result"]["coverage"],
+                    "coverage_score": s.get("coverage_score", 0.0),
                     "supported_points": s["result"]["supported_points"],
                     "missing_points": s["result"]["missing_points"],
                 }
@@ -313,6 +380,19 @@ async def send_message(
     for citation in citations:
         await db.refresh(citation)
 
+    # — paso 6: registrar query log (producto) —
+    try:
+        query_log = QueryLog(
+            organization_id=organization_id,
+            query=content,
+            coverage=coverage,
+            coverage_score=coverage_score,
+        )
+        db.add(query_log)
+        await db.commit()
+    except Exception as e:
+        logger.error("Error al guardar query log: %s", e)
+
     sources_count = len(citations)
     documents_count = len({c.document_id for c in citations})
 
@@ -329,6 +409,7 @@ async def send_message(
             "distances": debug_distances,
             # Judge decision
             "coverage": coverage,
+            "coverage_score": coverage_score,
             "supported_points": supported_points,
             "missing_points": missing_points,
             "relevant_chunks_count": len(evidence_chunks),
