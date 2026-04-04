@@ -48,6 +48,43 @@ async def upload_document(
     return document
 
 
+async def ingest_text_as_document(
+    db: AsyncSession,
+    organization_id: uuid.UUID,
+    filename: str,
+    text: str,
+) -> tuple[Document, int]:
+    """
+    Ingest plain text as a document, running the full chunking + embedding pipeline.
+    Returns (document, chunks_created).
+
+    Used by the Action Layer to promote generated drafts into the knowledge base.
+    Does not require a file on disk — text is stored directly in extracted_text.
+    """
+    document = Document(
+        organization_id=organization_id,
+        filename=filename,
+        status="uploaded",
+        extracted_text=text,
+    )
+    db.add(document)
+    await db.commit()
+    await db.refresh(document)
+
+    chunks = await chunking_service.create_chunks(db, document.id, organization_id, text)
+    await db.flush()
+
+    try:
+        vectors = await embedding_service.generate_embeddings([c.content for c in chunks])
+        for chunk, vector in zip(chunks, vectors):
+            chunk.embedding = vector
+    except Exception as e:
+        logger.error("Embeddings fallaron para documento %s: %s", document.id, e)
+
+    await db.commit()
+    return document, len(chunks)
+
+
 async def create_document(db: AsyncSession, organization_id: uuid.UUID, data: DocumentCreate) -> Document:
     document = Document(organization_id=organization_id, filename=data.filename)
     db.add(document)

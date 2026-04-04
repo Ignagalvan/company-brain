@@ -232,18 +232,6 @@ async def send_message(
         await db.commit()
         await db.refresh(assistant_message)
 
-        try:
-            query_log = QueryLog(
-                organization_id=organization_id,
-                query=content,
-                coverage="none",
-                coverage_score=0.0,
-            )
-            db.add(query_log)
-            await db.commit()
-        except Exception as e:
-            logger.error("Error al guardar query log (early exit): %s", e)
-
         logger.info("Query clasificada como %r — pipeline omitido.", classification)
 
         return {
