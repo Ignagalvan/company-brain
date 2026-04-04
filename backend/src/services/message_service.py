@@ -12,7 +12,7 @@ from src.exceptions import MessageProcessingError
 from src.models.citation import Citation
 from src.models.conversation import Conversation
 from src.models.message import Message
-from src.services import answer_service, expansion_service, retrieval_service
+from src.services import answer_service, expansion_service, query_decomposition, retrieval_service
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +52,117 @@ def _format_answer(answer: str, coverage: str, missing_points: list[str]) -> str
     return answer
 
 
+async def _run_single_query(
+    db: AsyncSession,
+    organization_id: uuid.UUID,
+    subquery: str,
+) -> dict:
+    """
+    Runs the full expansion → retrieval → judge pipeline for one query.
+
+    Returns:
+        subquery         : the query that was run
+        result           : raw output from generate_answer
+        evidence_chunks  : resolved chunk dicts (not indexes) for the cited evidence
+        reformulations   : expansion variants (without original)
+        chunks_before    : total chunks before dedup
+        chunks_after     : chunks sent to the judge
+        all_chunks       : merged chunk list (for debug distances)
+    """
+    queries = await expansion_service.expand_query(subquery)
+    all_results = await asyncio.gather(
+        *[
+            retrieval_service.search_chunks(
+                db=db,
+                organization_id=organization_id,
+                query=q,
+            )
+            for q in queries
+        ]
+    )
+    chunks_before = sum(len(r) for r in all_results)
+    chunks = _merge_chunks(list(all_results))
+
+    result = await answer_service.generate_answer(query=subquery, chunks=chunks)
+
+    evidence_chunks = (
+        [chunks[i] for i in result["evidence_indexes"] if i < len(chunks)]
+        if result["can_answer"]
+        else []
+    )
+
+    return {
+        "subquery": subquery,
+        "result": result,
+        "evidence_chunks": evidence_chunks,
+        "reformulations": queries[1:],
+        "chunks_before": chunks_before,
+        "chunks_after": len(chunks),
+        "all_chunks": chunks,
+    }
+
+
+def _aggregate_sub_results(subs: list[dict]) -> dict:
+    """
+    Combines results from multiple independent subquery pipelines.
+
+    Coverage rules:
+        ALL full  → "full"
+        ≥1 has evidence (full or partial) → "partial"
+        NONE has evidence → "none" (caller should use fallback)
+
+    Returns:
+        can_answer      : bool
+        coverage        : "full" | "partial" | "none"
+        answer          : combined answer text (already includes missing sections)
+        evidence_chunks : deduplicated union of evidence across subqueries
+        supported_points: union of all supported_points
+        missing_points  : subquery texts that had no evidence (for metadata)
+    """
+    answered = [s for s in subs if s["result"]["can_answer"]]
+    unanswered = [s for s in subs if not s["result"]["can_answer"]]
+
+    if not answered:
+        return {
+            "can_answer": False,
+            "coverage": "none",
+            "answer": answer_service.NO_CONTEXT_ANSWER,
+            "evidence_chunks": [],
+            "supported_points": [],
+            "missing_points": [s["subquery"] for s in subs],
+        }
+
+    all_full = all(s["result"]["coverage"] == "full" for s in subs)
+    coverage = "full" if all_full else "partial"
+
+    # Build combined answer: inline the "not found" message for unanswered parts
+    parts = []
+    for s in subs:
+        if s["result"]["can_answer"] and s["result"]["answer"]:
+            parts.append(s["result"]["answer"])
+        else:
+            parts.append(f"No encontré información sobre: {s['subquery']}")
+    combined_answer = "\n\n".join(parts)
+
+    # Dedup evidence chunks across subqueries (keep lowest distance per chunk_id)
+    seen: dict[str, dict] = {}
+    for s in answered:
+        for chunk in s["evidence_chunks"]:
+            cid = str(chunk["chunk_id"])
+            if cid not in seen or chunk["distance"] < seen[cid]["distance"]:
+                seen[cid] = chunk
+    all_evidence = list(seen.values())
+
+    return {
+        "can_answer": True,
+        "coverage": coverage,
+        "answer": combined_answer,
+        "evidence_chunks": all_evidence,
+        "supported_points": [pt for s in answered for pt in s["result"]["supported_points"]],
+        "missing_points": [s["subquery"] for s in unanswered],
+    }
+
+
 async def send_message(
     db: AsyncSession,
     organization_id: uuid.UUID,
@@ -89,48 +200,90 @@ async def send_message(
     db.add(user_message)
     await db.commit()
 
-    # — paso 3: query expansion + retrieval paralelo —
-    queries = await expansion_service.expand_query(content)
-    reformulations = queries[1:]  # expansions only, for logging
-
-    all_results = await asyncio.gather(
-        *[
-            retrieval_service.search_chunks(
-                db=db,
-                organization_id=organization_id,
-                query=q,
-            )
-            for q in queries
-        ]
-    )
-
-    chunks_before_dedup = sum(len(r) for r in all_results)
-    chunks = _merge_chunks(list(all_results))
-
+    # — paso 3+4: descomposición → expansion → retrieval → juez LLM —
+    subqueries = query_decomposition.decompose_query(content)
     logger.info(
-        "Retrieval: queries=%d chunks_before_dedup=%d chunks_after_dedup=%d",
-        len(queries), chunks_before_dedup, len(chunks),
+        "Query decomposition: %d subqueries from %r",
+        len(subqueries), content[:60],
     )
 
-    # — paso 4: juez LLM —
     try:
-        llm_result = await answer_service.generate_answer(query=content, chunks=chunks)
+        if len(subqueries) == 1:
+            sub = await _run_single_query(db, organization_id, content)
+
+            can_answer = sub["result"]["can_answer"]
+            coverage = sub["result"]["coverage"]
+            supported_points = sub["result"]["supported_points"]
+            missing_points = sub["result"]["missing_points"]
+            evidence_chunks = sub["evidence_chunks"]
+            answer = _format_answer(sub["result"]["answer"], coverage, missing_points)
+
+            # Debug metadata
+            reformulations = sub["reformulations"]
+            chunks_before_dedup = sub["chunks_before"]
+            chunks_after_dedup = sub["chunks_after"]
+            debug_distances = [
+                {"chunk_index": c.get("chunk_index"), "distance": round(c.get("distance", 0), 4)}
+                for c in sub["all_chunks"]
+            ]
+            debug_sub_results = None
+
+        else:
+            subs: list[dict] = []
+            for sq in subqueries:
+                try:
+                    subs.append(await _run_single_query(db, organization_id, sq))
+                except Exception as e:
+                    logger.error("Error en subquery %r: %s", sq, e)
+                    # Treat as unanswered rather than raising
+                    subs.append({
+                        "subquery": sq,
+                        "result": {
+                            "can_answer": False, "coverage": "none",
+                            "answer": "", "supported_points": [], "missing_points": [],
+                            "evidence_indexes": [],
+                        },
+                        "evidence_chunks": [],
+                        "reformulations": [],
+                        "chunks_before": 0,
+                        "chunks_after": 0,
+                        "all_chunks": [],
+                    })
+
+            agg = _aggregate_sub_results(subs)
+
+            can_answer = agg["can_answer"]
+            coverage = agg["coverage"]
+            supported_points = agg["supported_points"]
+            missing_points = agg["missing_points"]
+            evidence_chunks = agg["evidence_chunks"]
+            answer = agg["answer"]  # already includes inline missing sections
+
+            # Debug metadata
+            reformulations = [r for s in subs for r in s["reformulations"]]
+            chunks_before_dedup = sum(s["chunks_before"] for s in subs)
+            chunks_after_dedup = sum(s["chunks_after"] for s in subs)
+            debug_distances = []  # omit per-chunk distances for multi-query (too verbose)
+            debug_sub_results = [
+                {
+                    "subquery": s["subquery"],
+                    "coverage": s["result"]["coverage"],
+                    "supported_points": s["result"]["supported_points"],
+                    "missing_points": s["result"]["missing_points"],
+                }
+                for s in subs
+            ]
+
     except Exception as e:
         logger.error("Error al generar respuesta para conversación %s: %s", conversation_id, e)
         raise MessageProcessingError("Error al generar la respuesta del asistente") from e
 
-    can_answer = llm_result["can_answer"]
-    coverage = llm_result["coverage"]
-    supported_points = llm_result["supported_points"]
-    missing_points = llm_result["missing_points"]
-    evidence_indexes = llm_result["evidence_indexes"]
-
-    # Format answer: append missing section for partial coverage
-    answer = _format_answer(llm_result["answer"], coverage, missing_points)
+    logger.info(
+        "Retrieval summary: subqueries=%d chunks_before_dedup=%d chunks_after_dedup=%d coverage=%s",
+        len(subqueries), chunks_before_dedup, chunks_after_dedup, coverage,
+    )
 
     # — paso 5: guardar mensaje assistant + citations (commit 2) —
-    evidence_chunks = [chunks[i] for i in evidence_indexes if i < len(chunks)] if can_answer else []
-
     assistant_message = Message(
         conversation_id=conversation_id,
         organization_id=organization_id,
@@ -166,25 +319,25 @@ async def send_message(
     debug = None
     if settings.debug:
         debug = {
-            # Expansion
+            # Decomposition
             "query_original": content,
+            "decomposed_queries": subqueries,
             "reformulations": reformulations,
             # Retrieval
             "chunks_before_dedup": chunks_before_dedup,
-            "chunks_after_dedup": len(chunks),
-            "distances": [
-                {"chunk_index": c.get("chunk_index"), "distance": round(c.get("distance", 0), 4)}
-                for c in chunks
-            ],
+            "chunks_after_dedup": chunks_after_dedup,
+            "distances": debug_distances,
             # Judge decision
             "coverage": coverage,
             "supported_points": supported_points,
             "missing_points": missing_points,
             "relevant_chunks_count": len(evidence_chunks),
+            # Per-subquery detail (multi-query only)
+            "sub_results": debug_sub_results,
             # Fallback info
             "fallback": not can_answer,
             "fallback_reason": (
-                "no_relevant_chunks" if not chunks
+                "no_relevant_chunks" if not evidence_chunks and not can_answer
                 else ("llm_judge_none" if not can_answer else None)
             ),
         }
