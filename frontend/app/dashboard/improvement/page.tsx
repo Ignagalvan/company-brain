@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import Link from 'next/link'
+import { AppShell } from '../../app/components/AppShell'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
 const ORG_ID = process.env.NEXT_PUBLIC_ORG_ID ?? '00000000-0000-0000-0000-000000000001'
@@ -67,7 +67,7 @@ function CoverageBadge({ type }: { type: 'none' | 'partial' }) {
 function PriorityDot({ priority }: { priority: 'high' | 'medium' }) {
   return (
     <span
-      className={`inline-block w-2 h-2 rounded-full ${
+      className={`inline-block w-2 h-2 rounded-full shrink-0 mt-1.5 ${
         priority === 'high' ? 'bg-red-400' : 'bg-amber-400'
       }`}
       title={priority === 'high' ? 'Prioridad alta' : 'Prioridad media'}
@@ -134,11 +134,13 @@ function SuggestionItem({
   state,
   onGenerateDraft,
   onPromote,
+  onDismiss,
 }: {
   suggestion: Suggestion
   state: ItemStatus
   onGenerateDraft: () => void
   onPromote: () => void
+  onDismiss: () => void
 }) {
   const isPromoted = state.tag === 'promoted'
   const isConflict = state.tag === 'conflict'
@@ -159,7 +161,7 @@ function SuggestionItem({
             <p className="text-sm font-medium text-slate-800 leading-tight truncate">
               {suggestion.topic}
             </p>
-            <div className="flex items-center gap-2 mt-1">
+            <div className="flex items-center gap-2 mt-1 flex-wrap">
               <CoverageBadge type={suggestion.coverage_type} />
               <span className="text-[11px] text-slate-400">
                 {suggestion.occurrences} {suggestion.occurrences === 1 ? 'consulta' : 'consultas'}
@@ -200,7 +202,7 @@ function SuggestionItem({
                 onClick={onPromote}
                 className="text-xs px-3 py-1.5 rounded-lg bg-slate-900 text-white hover:bg-slate-700 transition-colors font-medium"
               >
-                Promover solución →
+                Promover →
               </button>
             </>
           )}
@@ -212,15 +214,32 @@ function SuggestionItem({
           )}
 
           {isPromoted && (
-            <span className="text-xs text-emerald-600 font-medium px-3 py-1.5">
-              ✓ Aplicado
-            </span>
+            <>
+              <span className="text-xs text-emerald-600 font-medium px-3 py-1.5">
+                ✓ Aplicado
+              </span>
+              <button
+                onClick={onDismiss}
+                className="text-xs px-2 py-1.5 text-slate-400 hover:text-slate-600 transition-colors"
+                title="Quitar de la lista"
+              >
+                Descartar
+              </button>
+            </>
           )}
 
           {isConflict && (
-            <span className="text-xs text-amber-600 font-medium px-3 py-1.5">
-              Ya existe
-            </span>
+            <>
+              <span className="text-xs text-amber-600 font-medium px-3 py-1.5">
+                Ya existe
+              </span>
+              <button
+                onClick={onDismiss}
+                className="text-xs px-3 py-1.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-700 transition-colors"
+              >
+                Descartar
+              </button>
+            </>
           )}
 
           {state.tag === 'error' && (
@@ -247,7 +266,7 @@ function SuggestionItem({
       {/* Conflict notice */}
       {isConflict && (
         <div className="mt-3 rounded-lg bg-amber-50 border border-amber-100 px-4 py-3 text-xs text-amber-700">
-          Ya existe un documento para este tema en tu base de conocimiento. Eliminalo si querés reemplazarlo.
+          Ya existe un documento para este tema en tu base de conocimiento. Podés descartarlo o eliminar el documento existente y promover de nuevo.
         </div>
       )}
 
@@ -287,6 +306,11 @@ export default function ImprovementPage() {
 
   function setItemState(topic: string, state: ItemStatus) {
     setItemStates(prev => ({ ...prev, [topic]: state }))
+  }
+
+  function handleDismiss(topic: string) {
+    setSuggestions(prev => prev.filter(s => s.topic !== topic))
+    setPromoted(prev => prev.filter(s => s.topic !== topic))
   }
 
   async function handleGenerateDraft(topic: string) {
@@ -342,139 +366,127 @@ export default function ImprovementPage() {
   const mediumPriority = suggestions.filter(s => s.priority === 'medium')
 
   return (
-    <div className="min-h-screen bg-slate-50 font-sans">
-      {/* Header */}
-      <header className="bg-white border-b border-slate-100 sticky top-0 z-10">
-        <div className="max-w-3xl mx-auto px-6 h-12 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Link
-              href="/app"
-              className="text-sm font-semibold text-slate-900 hover:text-slate-500 transition-colors"
-            >
-              Company Brain
-            </Link>
-            <span className="text-slate-300">/</span>
-            <span className="text-sm text-slate-500 font-medium">Knowledge Improvement</span>
-          </div>
-          <Link
-            href="/app"
-            className="text-xs text-slate-400 hover:text-slate-600 transition-colors"
-          >
-            ← Chat
-          </Link>
-        </div>
-      </header>
+    <AppShell>
+      <div className="flex-1 overflow-y-auto bg-slate-50">
+        <main className="max-w-3xl mx-auto px-4 py-8 sm:px-6">
 
-      <main className="max-w-3xl mx-auto px-6 py-8">
-        {/* Page title */}
-        <div className="mb-8">
-          <h1 className="text-lg font-semibold text-slate-900">Gaps de conocimiento</h1>
-          <p className="text-sm text-slate-500 mt-1">
-            Consultas sin respuesta detectadas en tu base de conocimiento. Generá un borrador y promovelo para cerrar el gap.
-          </p>
-        </div>
-
-        {/* Loading */}
-        {loading && (
-          <div className="space-y-3">
-            {[1, 2, 3].map(i => (
-              <div key={i} className="h-16 bg-white border border-slate-200 rounded-xl animate-pulse" />
-            ))}
-          </div>
-        )}
-
-        {/* Error */}
-        {!loading && fetchError && (
-          <div className="border border-red-200 bg-red-50 rounded-xl p-6 text-center">
-            <p className="text-sm text-red-600 font-medium">No se pudo conectar con el backend.</p>
-            <p className="text-xs text-red-400 mt-1">
-              Verificá que el servidor esté corriendo en {API_URL}
+          {/* Page title */}
+          <div className="mb-8">
+            <h1 className="text-lg font-semibold text-slate-900">Gaps de conocimiento</h1>
+            <p className="text-sm text-slate-500 mt-1.5 leading-relaxed">
+              Consultas sin respuesta detectadas en tu base de conocimiento. Generá un borrador y promovelo para cerrar el gap.
             </p>
           </div>
-        )}
 
-        {/* Empty */}
-        {!loading && !fetchError && suggestions.length === 0 && promoted.length === 0 && (
-          <div className="border border-slate-200 bg-white rounded-xl p-10 text-center">
-            <p className="text-sm font-medium text-slate-700">Sin gaps detectados</p>
-            <p className="text-xs text-slate-400 mt-1">
-              Hacé algunas consultas en el chat y volvé acá para ver los temas sin cobertura.
-            </p>
-          </div>
-        )}
-
-        {/* High priority */}
-        {!loading && highPriority.length > 0 && (
-          <section className="mb-6">
-            <div className="flex items-center gap-2 mb-3">
-              <span className="w-2 h-2 rounded-full bg-red-400 inline-block" />
-              <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                Alta prioridad
-              </h2>
-              <span className="text-xs text-slate-300">({highPriority.length})</span>
-            </div>
+          {/* Loading */}
+          {loading && (
             <div className="space-y-3">
-              {highPriority.map(s => (
-                <SuggestionItem
-                  key={s.topic}
-                  suggestion={s}
-                  state={getState(s.topic)}
-                  onGenerateDraft={() => handleGenerateDraft(s.topic)}
-                  onPromote={() => handlePromote(s)}
-                />
+              {[1, 2, 3].map(i => (
+                <div key={i} className="h-16 bg-white border border-slate-200 rounded-xl animate-pulse" />
               ))}
             </div>
-          </section>
-        )}
+          )}
 
-        {/* Medium priority */}
-        {!loading && mediumPriority.length > 0 && (
-          <section className="mb-6">
-            <div className="flex items-center gap-2 mb-3">
-              <span className="w-2 h-2 rounded-full bg-amber-400 inline-block" />
-              <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                Prioridad media
-              </h2>
-              <span className="text-xs text-slate-300">({mediumPriority.length})</span>
+          {/* Error */}
+          {!loading && fetchError && (
+            <div className="border border-red-200 bg-red-50 rounded-xl p-6 text-center">
+              <p className="text-sm text-red-600 font-medium">No se pudo conectar con el backend.</p>
+              <p className="text-xs text-red-400 mt-1">
+                Verificá que el servidor esté corriendo en {API_URL}
+              </p>
             </div>
-            <div className="space-y-3">
-              {mediumPriority.map(s => (
-                <SuggestionItem
-                  key={s.topic}
-                  suggestion={s}
-                  state={getState(s.topic)}
-                  onGenerateDraft={() => handleGenerateDraft(s.topic)}
-                  onPromote={() => handlePromote(s)}
-                />
-              ))}
-            </div>
-          </section>
-        )}
+          )}
 
-        {/* Promoted this session */}
-        {promoted.length > 0 && (
-          <section>
-            <div className="flex items-center gap-2 mb-3">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block" />
-              <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                Aplicados esta sesión
-              </h2>
-              <span className="text-xs text-slate-300">({promoted.length})</span>
+          {/* Empty */}
+          {!loading && !fetchError && suggestions.length === 0 && promoted.length === 0 && (
+            <div className="border border-slate-200 bg-white rounded-xl p-10 text-center">
+              <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center mx-auto mb-4">
+                <span className="text-slate-400 text-base">✦</span>
+              </div>
+              <p className="text-sm font-medium text-slate-700">Sin gaps detectados</p>
+              <p className="text-xs text-slate-400 mt-1.5 max-w-xs mx-auto leading-relaxed">
+                Hacé algunas consultas en el chat y volvé acá para ver los temas sin cobertura.
+              </p>
             </div>
-            <div className="space-y-3">
-              {promoted.map(s => (
-                <SuggestionItem
-                  key={s.topic}
-                  suggestion={s}
-                  state={getState(s.topic)}
-                  onGenerateDraft={() => handleGenerateDraft(s.topic)}
-                  onPromote={() => handlePromote(s)}
-                />
-              ))}
-            </div>
-          </section>
-        )}
-      </main>
-    </div>
+          )}
+
+          {/* High priority */}
+          {!loading && highPriority.length > 0 && (
+            <section className="mb-6">
+              <div className="flex items-center gap-2 mb-3">
+                <span className="w-2 h-2 rounded-full bg-red-400 inline-block" />
+                <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Alta prioridad
+                </h2>
+                <span className="text-xs text-slate-300">({highPriority.length})</span>
+              </div>
+              <div className="space-y-3">
+                {highPriority.map(s => (
+                  <SuggestionItem
+                    key={s.topic}
+                    suggestion={s}
+                    state={getState(s.topic)}
+                    onGenerateDraft={() => handleGenerateDraft(s.topic)}
+                    onPromote={() => handlePromote(s)}
+                    onDismiss={() => handleDismiss(s.topic)}
+                  />
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* Medium priority */}
+          {!loading && mediumPriority.length > 0 && (
+            <section className="mb-6">
+              <div className="flex items-center gap-2 mb-3">
+                <span className="w-2 h-2 rounded-full bg-amber-400 inline-block" />
+                <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Prioridad media
+                </h2>
+                <span className="text-xs text-slate-300">({mediumPriority.length})</span>
+              </div>
+              <div className="space-y-3">
+                {mediumPriority.map(s => (
+                  <SuggestionItem
+                    key={s.topic}
+                    suggestion={s}
+                    state={getState(s.topic)}
+                    onGenerateDraft={() => handleGenerateDraft(s.topic)}
+                    onPromote={() => handlePromote(s)}
+                    onDismiss={() => handleDismiss(s.topic)}
+                  />
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* Promoted this session */}
+          {promoted.length > 0 && (
+            <section>
+              <div className="flex items-center gap-2 mb-3">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block" />
+                <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Aplicados esta sesión
+                </h2>
+                <span className="text-xs text-slate-300">({promoted.length})</span>
+              </div>
+              <div className="space-y-3">
+                {promoted.map(s => (
+                  <SuggestionItem
+                    key={s.topic}
+                    suggestion={s}
+                    state={getState(s.topic)}
+                    onGenerateDraft={() => handleGenerateDraft(s.topic)}
+                    onPromote={() => handlePromote(s)}
+                    onDismiss={() => handleDismiss(s.topic)}
+                  />
+                ))}
+              </div>
+            </section>
+          )}
+
+        </main>
+      </div>
+    </AppShell>
   )
 }

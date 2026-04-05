@@ -20,6 +20,8 @@ interface SidebarProps {
   onDeleteConversation: (id: string) => void
   onDocUploaded: (doc: UploadedDoc) => void
   onDeleteDoc: (id: string) => void
+  mobileOpen?: boolean
+  onMobileClose?: () => void
 }
 
 export function Sidebar({
@@ -31,6 +33,8 @@ export function Sidebar({
   onDeleteConversation,
   onDocUploaded,
   onDeleteDoc,
+  mobileOpen = false,
+  onMobileClose,
 }: SidebarProps) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const dragCounterRef = useRef(0)
@@ -101,15 +105,19 @@ export function Sidebar({
     }
   }
 
-  return (
-    <aside className="w-72 shrink-0 bg-white border-r border-slate-100 flex flex-col overflow-hidden">
+  // ─── Inner content (shared between mobile overlay and desktop) ───────────────
 
+  const sidebarContent = (
+    <>
       {/* New conversation */}
       <div className="px-4 pt-5 pb-4 border-b border-slate-100">
         <button
           data-testid="new-conversation-btn"
-          onClick={onNewConversation}
-          className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-slate-900 text-white text-sm font-semibold rounded-xl hover:bg-slate-700 transition-colors"
+          onClick={() => {
+            onNewConversation()
+            onMobileClose?.()
+          }}
+          className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-slate-900 text-white text-sm font-semibold rounded-xl hover:bg-slate-700 active:bg-slate-800 transition-colors"
         >
           <span className="text-base leading-none">+</span>
           Nueva conversación
@@ -137,7 +145,10 @@ export function Sidebar({
                   style={{ borderLeftColor: isActive ? '#0f172a' : 'transparent' }}
                 >
                   <button
-                    onClick={() => onSelectConversation(conv.id)}
+                    onClick={() => {
+                      onSelectConversation(conv.id)
+                      onMobileClose?.()
+                    }}
                     className={[
                       'flex-1 min-w-0 text-left px-4 py-3.5 flex items-start gap-2.5 transition-colors',
                       isActive ? 'bg-slate-100' : 'hover:bg-slate-50',
@@ -286,6 +297,35 @@ export function Sidebar({
         </div>
 
       </div>
-    </aside>
+    </>
+  )
+
+  return (
+    <>
+      {/* Mobile backdrop */}
+      {mobileOpen && (
+        <div
+          className="md:hidden fixed inset-0 top-14 z-20 bg-black/20"
+          onClick={onMobileClose}
+        />
+      )}
+
+      {/* Sidebar — desktop: normal flow | mobile: fixed overlay */}
+      <aside
+        className={[
+          // Base
+          'flex-col overflow-hidden bg-white border-r border-slate-100',
+          // Desktop: always visible, in flow
+          'md:flex md:relative md:w-64 md:shrink-0',
+          'md:top-auto md:bottom-auto md:z-auto md:shadow-none md:translate-x-0',
+          // Mobile: hidden by default, overlay when open
+          mobileOpen
+            ? 'flex fixed left-0 top-14 bottom-0 z-30 w-72 shadow-xl'
+            : 'hidden',
+        ].join(' ')}
+      >
+        {sidebarContent}
+      </aside>
+    </>
   )
 }

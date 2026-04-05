@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import Link from 'next/link'
+import { AppShell } from './components/AppShell'
 import { Sidebar } from './components/Sidebar'
 import { ChatArea } from './components/ChatArea'
 import { Conversation, Message, UploadedDoc } from './types'
@@ -20,6 +20,7 @@ export default function AppPage() {
   const [uploadedDocs, setUploadedDocs] = useState<UploadedDoc[]>([])
   const [pendingContent, setPendingContent] = useState('')
   const [sendError, setSendError] = useState('')
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
 
   // AbortController for the in-flight send request.
   // Cancels the previous request when the user switches conversations or sends a new one.
@@ -174,24 +175,7 @@ export default function AppPage() {
   }
 
   return (
-    <div className="h-screen bg-slate-50 font-sans flex flex-col overflow-hidden">
-
-      {/* Header */}
-      <header className="bg-white border-b border-slate-100 shrink-0">
-        <div className="h-13 px-6 flex items-center justify-between">
-          <Link href="/" className="text-sm font-semibold text-slate-900 hover:text-slate-500 transition-colors">
-            Company Brain
-          </Link>
-          <Link
-            href="/dashboard/improvement"
-            className="text-xs text-slate-400 hover:text-slate-600 transition-colors font-medium"
-          >
-            Knowledge gaps →
-          </Link>
-        </div>
-      </header>
-
-      {/* Workspace */}
+    <AppShell>
       <div className="flex-1 flex overflow-hidden">
         <Sidebar
           conversations={conversations}
@@ -202,15 +186,17 @@ export default function AppPage() {
           onDeleteConversation={handleDeleteConversation}
           onDocUploaded={handleDocUploaded}
           onDeleteDoc={handleDeleteDoc}
+          mobileOpen={mobileSidebarOpen}
+          onMobileClose={() => setMobileSidebarOpen(false)}
         />
         <ChatArea
           conversation={activeConv}
           pendingContent={pendingContent}
           sendError={sendError}
           onSend={handleSend}
+          onToggleSidebar={() => setMobileSidebarOpen(v => !v)}
         />
       </div>
-
-    </div>
+    </AppShell>
   )
 }
