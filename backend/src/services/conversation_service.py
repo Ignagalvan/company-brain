@@ -122,8 +122,8 @@ async def get_conversation_with_messages(
                 "created_at": m.created_at,
                 "sources_count": len(citations_by_message[m.id]),
                 "documents_count": len({c.document_id for c in citations_by_message[m.id]}),
-                "has_sufficient_evidence": len(citations_by_message[m.id]) >= 3,
-                "is_partial_answer": 0 < len(citations_by_message[m.id]) < 3,
+                "has_sufficient_evidence": getattr(m, "coverage", None) == "full",
+                "is_partial_answer": getattr(m, "coverage", None) == "partial",
                 "citations": [
                     {
                         "id": c.id,

@@ -21,6 +21,56 @@ logger = logging.getLogger(__name__)
 # Maximum chunks sent to the LLM judge after merge+dedup across all query variants.
 _MAX_CHUNKS_TO_JUDGE = 10
 
+# ─── Coverage upgrade thresholds ─────────────────────────────────────────────
+# When the LLM judge returns "partial", we apply a post-hoc upgrade to "full"
+# if the evidence quality is high enough.  The judge says "partial" because it
+# always lists *something* in missing_points by definition — but those points
+# may be tangential to the user's actual intent (e.g. the user asked "¿hay
+# prueba gratis?" and the judge flags "detalles sobre renovación" as missing,
+# which is irrelevant to the core question).
+#
+# Two criteria must both be met:
+#   1. Few missing points: ≤ _MAX_TOLERATED_MISSING (tangential extras are OK).
+#   2. Coverage score above threshold: varies by evidence count because a single
+#      highly-relevant fragment is a stronger signal than many weak ones.
+_MAX_TOLERATED_MISSING = 2        # ≤2 missing points → probably tangential
+_UPGRADE_THRESHOLD_SINGLE = 0.55  # 1 evidence chunk: lower bar (focused answer)
+_UPGRADE_THRESHOLD_MULTI  = 0.60  # 2+ evidence chunks: slightly higher bar
+
+
+def _should_upgrade_to_full(
+    coverage: str,
+    coverage_score: float,
+    evidence_count: int,
+    missing_points: list[str],
+) -> bool:
+    """
+    Returns True if a 'partial' judgment should be upgraded to 'full'.
+
+    ALL conditions must hold:
+    - coverage is 'partial' (only partial can be upgraded)
+    - at least 1 evidence chunk was cited
+    - ≤ _MAX_TOLERATED_MISSING points listed as missing (more = genuinely partial)
+    - coverage_score ≥ threshold (lower for single-fragment focused answers)
+    """
+    if coverage != "partial":
+        logger.debug("upgrade_check: coverage=%r → skip (not partial)", coverage)
+        return False
+    if evidence_count < 1:
+        logger.debug("upgrade_check: evidence_count=0 → skip (no evidence)")
+        return False
+    threshold = _UPGRADE_THRESHOLD_SINGLE if evidence_count == 1 else _UPGRADE_THRESHOLD_MULTI
+    missing_count = len(missing_points)
+    decision = missing_count <= _MAX_TOLERATED_MISSING and coverage_score >= threshold
+    logger.info(
+        "upgrade_check: coverage=partial score=%.3f evidence=%d missing=%d "
+        "threshold=%.2f max_missing=%d → %s",
+        coverage_score, evidence_count, missing_count,
+        threshold, _MAX_TOLERATED_MISSING,
+        "UPGRADE" if decision else "keep_partial",
+    )
+    return decision
+
 
 def _derive_title(content: str) -> str:
     title = " ".join(content.split())[:80]
@@ -94,8 +144,25 @@ async def _run_single_query(
         else []
     )
 
-    scores = [c["score"] for c in chunks if "score" in c]
-    coverage_score = round(sum(scores) / len(scores), 4) if scores else 0.0
+    # Coverage score: use evidence chunks only (not all retrieved chunks).
+    # This reflects the actual quality of what the judge cited, not noise chunks.
+    evidence_scores = [c["score"] for c in evidence_chunks if "score" in c]
+    coverage_score = round(sum(evidence_scores) / len(evidence_scores), 4) if evidence_scores else 0.0
+
+    # Post-hoc coverage upgrade: partial→full when evidence is good enough.
+    # See _should_upgrade_to_full for full rationale and thresholds.
+    if _should_upgrade_to_full(
+        coverage=result["coverage"],
+        coverage_score=coverage_score,
+        evidence_count=len(evidence_chunks),
+        missing_points=result["missing_points"],
+    ):
+        result = {**result, "coverage": "full"}
+        logger.info(
+            "Coverage upgraded partial→full: coverage_score=%.3f evidence_chunks=%d "
+            "missing_points=%d subquery=%r",
+            coverage_score, len(evidence_chunks), len(result.get("missing_points", [])), subquery[:60],
+        )
 
     return {
         "subquery": subquery,
@@ -339,12 +406,14 @@ async def send_message(
     )
 
     # — paso 5: guardar mensaje assistant + citations (commit 2) —
+    logger.info("final_coverage_decision: coverage=%s subqueries=%d", coverage, len(subqueries))
     assistant_message = Message(
         conversation_id=conversation_id,
         organization_id=organization_id,
         role="assistant",
         content=answer,
         model_used=settings.chat_model,
+        coverage=coverage,
     )
     db.add(assistant_message)
     await db.flush()

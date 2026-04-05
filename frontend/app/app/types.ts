@@ -19,6 +19,7 @@ export type MessageDebug = {
 
 export type Message = {
   id: string
+  conversation_id: string
   role: 'user' | 'assistant'
   content: string
   model_used: string | null

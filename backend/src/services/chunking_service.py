@@ -181,6 +181,31 @@ def chunk_text_with_sections(
     if not raw_chunks:
         return []
 
+    # 3.5 Consolidate adjacent short chunks across sections.
+    # Many structured documents (templates, policies) produce multiple sections
+    # that are each small (< half chunk_size). Keeping them separate means the
+    # judge sees many tiny fragments that individually feel incomplete, causing
+    # "partial" coverage even when the topic is fully covered in aggregate.
+    # Strategy: merge two consecutive chunks when BOTH are below the half-size
+    # threshold and the combined result stays within chunk_size.
+    _HALF_SIZE = chunk_size // 2  # 750 chars at default settings
+
+    consolidated: list[dict] = []
+    for item in raw_chunks:
+        prev = consolidated[-1] if consolidated else None
+        if (
+            prev is not None
+            and len(prev['content']) < _HALF_SIZE
+            and len(item['content']) < _HALF_SIZE
+            and len(prev['content']) + len(item['content']) + 2 <= chunk_size
+        ):
+            # Merge: newline separator, keep section from first chunk
+            prev['content'] = prev['content'] + '\n' + item['content']
+        else:
+            consolidated.append({'content': item['content'], 'section': item['section']})
+
+    raw_chunks = consolidated
+
     # 4. Apply semantic overlap: last sentence of previous chunk
     if overlap <= 0 or len(raw_chunks) <= 1:
         return raw_chunks

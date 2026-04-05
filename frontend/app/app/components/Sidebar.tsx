@@ -102,14 +102,14 @@ export function Sidebar({
   }
 
   return (
-    <aside className="w-80 shrink-0 bg-white border-r border-slate-100 flex flex-col overflow-hidden">
+    <aside className="w-72 shrink-0 bg-white border-r border-slate-100 flex flex-col overflow-hidden">
 
       {/* New conversation */}
       <div className="px-4 pt-5 pb-4 border-b border-slate-100">
         <button
           data-testid="new-conversation-btn"
           onClick={onNewConversation}
-          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-slate-900 text-white text-xs font-semibold rounded-xl hover:bg-slate-700 transition-colors"
+          className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-slate-900 text-white text-sm font-semibold rounded-xl hover:bg-slate-700 transition-colors"
         >
           <span className="text-base leading-none">+</span>
           Nueva conversación
@@ -119,9 +119,9 @@ export function Sidebar({
       {/* Conversations list */}
       <div className="flex-1 overflow-y-auto">
         {conversations.length === 0 ? (
-          <div className="px-5 py-6">
-            <p className="text-xs font-medium text-slate-500 mb-1">Sin conversaciones</p>
-            <p className="text-[11px] text-slate-400 leading-relaxed">
+          <div className="px-5 py-8">
+            <p className="text-sm font-medium text-slate-500 mb-1.5">Sin conversaciones</p>
+            <p className="text-xs text-slate-400 leading-relaxed">
               Iniciá una nueva conversación para comenzar a consultar tus documentos.
             </p>
           </div>
@@ -139,15 +139,15 @@ export function Sidebar({
                   <button
                     onClick={() => onSelectConversation(conv.id)}
                     className={[
-                      'flex-1 min-w-0 text-left px-4 py-3 flex items-start gap-2.5 transition-colors',
+                      'flex-1 min-w-0 text-left px-4 py-3.5 flex items-start gap-2.5 transition-colors',
                       isActive ? 'bg-slate-100' : 'hover:bg-slate-50',
                     ].join(' ')}
                   >
-                    <span className="mt-0.5 text-slate-400 text-[11px] shrink-0">◈</span>
+                    <span className="mt-0.5 text-slate-400 text-xs shrink-0">◈</span>
                     <span
                       data-testid="conversation-title"
                       className={[
-                        'text-[13px] truncate leading-snug',
+                        'text-sm truncate leading-snug',
                         isActive ? 'font-semibold text-slate-900' : 'font-normal text-slate-600',
                       ].join(' ')}
                     >
@@ -175,25 +175,25 @@ export function Sidebar({
       </div>
 
       {/* Documents + Upload */}
-      <div className="border-t border-slate-100 bg-slate-50/60 px-4 py-4 space-y-4">
+      <div className="border-t border-slate-100 bg-slate-50/60 px-4 py-5 space-y-5">
 
         {/* Documents list */}
         <div>
-          <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500 mb-2">
+          <p className="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-2.5">
             Documentos
             {uploadedDocs.length > 0 && (
               <span className="ml-1 font-normal text-slate-400">({uploadedDocs.length})</span>
             )}
           </p>
           {uploadedDocs.length === 0 ? (
-            <p className="text-[11px] text-slate-400 leading-relaxed">
+            <p className="text-xs text-slate-400 leading-relaxed">
               Ningún documento cargado.
             </p>
           ) : (
-            <ul className="space-y-1">
+            <ul className="space-y-1.5">
               {uploadedDocs.map(doc => (
-                <li key={doc.id} data-testid="document-item" className="group flex items-center gap-2 px-2.5 py-1.5 bg-white rounded-lg border border-slate-100">
-                  <span className="shrink-0 text-[10px] text-emerald-500 font-bold">✓</span>
+                <li key={doc.id} data-testid="document-item" className="group flex items-center gap-2 px-3 py-2 bg-white rounded-lg border border-slate-100">
+                  <span className="shrink-0 text-xs text-emerald-500 font-bold">✓</span>
                   <span data-testid="document-name" className="text-xs text-slate-700 truncate flex-1">{doc.filename}</span>
                   <button
                     data-testid="delete-doc-btn"
@@ -211,7 +211,7 @@ export function Sidebar({
 
         {/* Upload zone */}
         <div>
-          <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-400 mb-2">
+          <p className="text-xs font-semibold uppercase tracking-widest text-slate-400 mb-2.5">
             Subir PDF
           </p>
 
@@ -237,7 +237,7 @@ export function Sidebar({
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
             className={[
-              'border-2 border-dashed rounded-xl px-3 py-4 text-center cursor-pointer transition-colors select-none',
+              'border-2 border-dashed rounded-xl px-3 py-5 text-center cursor-pointer transition-colors select-none',
               isDragging
                 ? 'border-slate-400 bg-slate-100'
                 : file
@@ -247,19 +247,19 @@ export function Sidebar({
           >
             {file ? (
               <div>
-                <p className="text-[11px] font-medium text-slate-700 truncate">{file.name}</p>
-                <p className="text-[10px] text-slate-400 mt-0.5">{(file.size / 1024).toFixed(0)} KB</p>
+                <p className="text-xs font-medium text-slate-700 truncate">{file.name}</p>
+                <p className="text-[11px] text-slate-400 mt-0.5">{(file.size / 1024).toFixed(0)} KB</p>
               </div>
             ) : (
-              <p className="text-[11px] text-slate-500">
+              <p className="text-xs text-slate-500">
                 {isDragging ? 'Soltá el archivo' : 'Arrastrá o hacé clic para subir un PDF'}
               </p>
             )}
           </div>
 
-          <div className="flex items-center justify-between mt-2">
+          <div className="flex items-center justify-between mt-2.5">
             {file ? (
-              <button onClick={clearFile} className="text-[11px] text-slate-400 hover:text-slate-600 transition-colors">
+              <button onClick={clearFile} className="text-xs text-slate-400 hover:text-slate-600 transition-colors">
                 Cambiar
               </button>
             ) : <span />}
@@ -267,19 +267,19 @@ export function Sidebar({
               data-testid="upload-btn"
               onClick={handleUpload}
               disabled={!file || uploading}
-              className="px-3 py-1.5 bg-slate-900 text-white text-[11px] font-semibold rounded-lg hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              className="px-4 py-2 bg-slate-900 text-white text-xs font-semibold rounded-lg hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               {uploading ? 'Procesando…' : 'Subir'}
             </button>
           </div>
 
           {uploadStatus === 'success' && (
-            <p className="mt-2 text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-100 px-2.5 py-1.5 rounded-lg">
+            <p className="mt-2.5 text-xs text-emerald-700 bg-emerald-50 border border-emerald-100 px-3 py-2 rounded-lg">
               ✓ {uploadMessage}
             </p>
           )}
           {uploadStatus === 'error' && (
-            <p className="mt-2 text-[11px] text-red-600 bg-red-50 border border-red-100 px-2.5 py-1.5 rounded-lg">
+            <p className="mt-2.5 text-xs text-red-600 bg-red-50 border border-red-100 px-3 py-2 rounded-lg">
               {uploadMessage}
             </p>
           )}

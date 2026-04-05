@@ -30,7 +30,7 @@ def test_generate_draft_pricing_template():
     result = generate_draft("cuánto cuesta el plan")
     assert "Planes" in result
     assert "Precios" in result
-    assert "Condiciones" in result
+    assert "Descuentos" in result
 
 
 def test_generate_draft_contact_template():
@@ -188,3 +188,80 @@ def test_endpoint_source_query_optional(client):
     )
     assert r_no_query.json()["source_query"] is None
     assert r_with_query.json()["source_query"] == "cual es el telefono"
+
+
+# ---------------------------------------------------------------------------
+# Template quality validation
+# ---------------------------------------------------------------------------
+
+_ALL_TOPICS = [
+    ("como se paga el servicio", "payment"),
+    ("hay prueba gratis", "trial"),
+    ("precio del plan pro", "pricing"),
+    ("telefono de contacto", "contact"),
+    ("tecnologias del backend", "technical"),
+    ("que problema resuelve", "product"),
+    ("politica de vacaciones", "generic"),
+]
+
+
+@pytest.mark.parametrize("topic,expected_type", _ALL_TOPICS)
+def test_topic_mapping(topic, expected_type):
+    """Each topic string must resolve to the expected draft_type."""
+    result = generate_draft_with_metadata(topic)
+    assert result["draft_type"] == expected_type, (
+        f"topic={topic!r}: expected {expected_type!r}, got {result['draft_type']!r}"
+    )
+
+
+@pytest.mark.parametrize("topic,_", _ALL_TOPICS)
+def test_no_empty_bullet_lines(topic, _):
+    """No bullet line should be empty (i.e., a lone '-' with no content)."""
+    content = generate_draft(topic)
+    for line in content.splitlines():
+        stripped = line.strip()
+        assert stripped != "-", f"Empty bullet found in draft for topic={topic!r}"
+        assert not stripped.startswith("- ") or len(stripped) > 2, (
+            f"Near-empty bullet {stripped!r} in draft for topic={topic!r}"
+        )
+
+
+@pytest.mark.parametrize("topic,_", _ALL_TOPICS)
+def test_minimum_bullet_count(topic, _):
+    """Every template must have at least 4 real bullet points."""
+    content = generate_draft(topic)
+    bullets = [
+        line.strip() for line in content.splitlines()
+        if line.strip().startswith("- ") and len(line.strip()) > 3
+    ]
+    assert len(bullets) >= 4, (
+        f"Topic {topic!r} has only {len(bullets)} bullet(s), expected >= 4"
+    )
+
+
+@pytest.mark.parametrize("topic,_", _ALL_TOPICS)
+def test_notas_importantes_present(topic, _):
+    """Every template must include a 'Notas importantes' section."""
+    content = generate_draft(topic)
+    assert "Notas importantes" in content, (
+        f"Missing 'Notas importantes' section in draft for topic={topic!r}"
+    )
+
+
+@pytest.mark.parametrize("topic,_", _ALL_TOPICS)
+def test_output_not_empty(topic, _):
+    """generate_draft must never return an empty string."""
+    result = generate_draft(topic)
+    assert result.strip() != "", f"Empty output for topic={topic!r}"
+
+
+def test_payment_template_key_content():
+    result = generate_draft("como se paga")
+    assert "Visa" in result or "tarjeta" in result.lower()
+    assert "reembolso" in result.lower() or "cancelaci" in result.lower()
+
+
+def test_trial_template_key_content():
+    result = generate_draft("prueba gratuita")
+    assert "14" in result or "días" in result.lower()
+    assert "tarjeta" in result.lower() or "crédito" in result.lower()

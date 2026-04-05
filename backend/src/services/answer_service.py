@@ -103,8 +103,9 @@ JUDGE_PROMPT = (
     '"answer": string, "supported_points": [string], "missing_points": [string], '
     '"relevant_chunk_indexes": [int]}\n'
     "DEFINICIONES:\n"
-    "- coverage='full': la pregunta se responde completamente con los fragmentos.\n"
-    "- coverage='partial': al menos una parte de la pregunta tiene evidencia clara, aunque el resto no.\n"
+    "- coverage='full': la pregunta se responde completamente con los fragmentos disponibles "
+    "(uno o varios fragmentos en conjunto). Si entre todos los fragmentos la pregunta queda respondida, es 'full'.\n"
+    "- coverage='partial': al menos UNA PARTE ESPECÍFICA de la pregunta no está cubierta por ningún fragmento.\n"
     "- coverage='none': los fragmentos no contienen información útil para NINGUNA parte de la pregunta.\n"
     "REGLAS:\n"
     "1. can_answer=true si coverage es 'full' o 'partial' con al menos 1 punto respaldado.\n"

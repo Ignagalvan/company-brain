@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { Sidebar } from './components/Sidebar'
 import { ChatArea } from './components/ChatArea'
@@ -20,6 +20,10 @@ export default function AppPage() {
   const [uploadedDocs, setUploadedDocs] = useState<UploadedDoc[]>([])
   const [pendingContent, setPendingContent] = useState('')
   const [sendError, setSendError] = useState('')
+
+  // AbortController for the in-flight send request.
+  // Cancels the previous request when the user switches conversations or sends a new one.
+  const sendAbortRef = useRef<AbortController | null>(null)
 
   const activeConv = conversations.find(c => c.id === activeConvId) ?? null
 
@@ -47,11 +51,19 @@ export default function AppPage() {
   }, [])
 
   function handleNewConversation() {
+    // Cancel any in-flight send and clear pending state immediately
+    sendAbortRef.current?.abort()
+    sendAbortRef.current = null
     setActiveConvId(null)
+    setPendingContent('')
     setSendError('')
   }
 
   async function handleSelectConversation(id: string) {
+    // Cancel any in-flight send and clear pending state immediately
+    sendAbortRef.current?.abort()
+    sendAbortRef.current = null
+    setPendingContent('')
     setActiveConvId(id)
     setSendError('')
 
@@ -64,6 +76,11 @@ export default function AppPage() {
   }
 
   async function handleDeleteConversation(id: string) {
+    if (activeConvId === id) {
+      sendAbortRef.current?.abort()
+      sendAbortRef.current = null
+      setPendingContent('')
+    }
     try {
       await fetch(`${API_URL}/conversations/${id}`, { method: 'DELETE', headers: HEADERS })
     } catch {}
@@ -83,6 +100,11 @@ export default function AppPage() {
   }
 
   async function handleSend(content: string) {
+    // Abort any previous in-flight request (e.g. rapid re-sends)
+    sendAbortRef.current?.abort()
+    const controller = new AbortController()
+    sendAbortRef.current = controller
+
     setPendingContent(content)
     setSendError('')
 
@@ -94,7 +116,11 @@ export default function AppPage() {
           conversation_id: activeConvId ?? null,
           content,
         }),
+        signal: controller.signal,
       })
+
+      // Request was aborted (user switched conversations) — discard result silently
+      if (controller.signal.aborted) return
 
       if (!res.ok) {
         setSendError(res.status === 502
@@ -104,11 +130,20 @@ export default function AppPage() {
       }
 
       const assistantMsg: Message = await res.json()
+
+      // Check again after parsing JSON (async microtask may have yielded)
+      if (controller.signal.aborted) return
+
       const convId = assistantMsg.conversation_id
 
-      // Fetch full conversation to get consistent state (user + assistant messages)
-      const convRes = await fetch(`${API_URL}/conversations/${convId}`, { headers: HEADERS })
+      // Fetch full conversation for consistent user+assistant state
+      const convRes = await fetch(`${API_URL}/conversations/${convId}`, {
+        headers: HEADERS,
+        signal: controller.signal,
+      })
       const fullConv: Conversation | null = convRes.ok ? await convRes.json() : null
+
+      if (controller.signal.aborted) return
 
       setConversations(prev => {
         const exists = prev.find(c => c.id === convId)
@@ -128,9 +163,12 @@ export default function AppPage() {
       })
 
       setActiveConvId(convId)
-    } catch {
+    } catch (e) {
+      // AbortError is expected when the user switches conversations — ignore it
+      if (e instanceof Error && e.name === 'AbortError') return
       setSendError('No se pudo conectar con el backend.')
     } finally {
+      // Always clear the loading indicator
       setPendingContent('')
     }
   }
@@ -140,13 +178,16 @@ export default function AppPage() {
 
       {/* Header */}
       <header className="bg-white border-b border-slate-100 shrink-0">
-        <div className="h-12 px-6 flex items-center justify-between">
+        <div className="h-13 px-6 flex items-center justify-between">
           <Link href="/" className="text-sm font-semibold text-slate-900 hover:text-slate-500 transition-colors">
             Company Brain
           </Link>
-          <span className="text-[10px] font-semibold uppercase tracking-widest text-slate-400">
-            Demo
-          </span>
+          <Link
+            href="/dashboard/improvement"
+            className="text-xs text-slate-400 hover:text-slate-600 transition-colors font-medium"
+          >
+            Knowledge gaps →
+          </Link>
         </div>
       </header>
 

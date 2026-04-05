@@ -22,6 +22,7 @@ class Message(Base):
     role: Mapped[str] = mapped_column(String, nullable=False)  # "user" | "assistant"
     content: Mapped[str] = mapped_column(Text, nullable=False)
     model_used: Mapped[str | None] = mapped_column(String, nullable=True)
+    coverage: Mapped[str | None] = mapped_column(String, nullable=True)  # "full"|"partial"|"none"|None
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
