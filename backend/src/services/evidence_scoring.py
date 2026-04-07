@@ -1,4 +1,6 @@
 import logging
+import re
+import unicodedata
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +17,42 @@ _WEIGHT_VECTOR  = 0.50
 _WEIGHT_KEYWORD = 0.20
 _WEIGHT_LENGTH_R  = 0.20
 _WEIGHT_POSITION_R = 0.10
+_TOKEN_RE = re.compile(r"[a-z0-9@._+-]+")
+_STOPWORDS = {
+    "que", "cual", "cuales", "cada", "cuanto", "cuantos", "dias", "hay", "dar",
+    "para", "por", "con", "sin", "del", "de", "la", "el", "los", "las", "una",
+    "uno", "unos", "unas", "es", "se", "ya", "mas", "menos", "informacion",
+}
+
+
+def _normalize_token(text: str) -> str:
+    return unicodedata.normalize("NFD", text.lower()).encode("ascii", "ignore").decode()
+
+
+def _tokenize(text: str) -> set[str]:
+    return set(_TOKEN_RE.findall(_normalize_token(text)))
+
+
+def _content_tokens(text: str) -> set[str]:
+    return {token for token in _tokenize(text) if len(token) >= 4 and token not in _STOPWORDS}
+
+
+def _tokens_match(left: str, right: str) -> bool:
+    if left == right:
+        return True
+    shorter, longer = sorted((left, right), key=len)
+    return len(shorter) >= 5 and longer.startswith(shorter)
+
+
+def _match_count(query_tokens: set[str], content_tokens: set[str]) -> int:
+    hits = 0
+    remaining = set(content_tokens)
+    for query_token in query_tokens:
+        match = next((token for token in remaining if _tokens_match(query_token, token)), None)
+        if match is not None:
+            hits += 1
+            remaining.remove(match)
+    return hits
 
 
 def _similarity_score(distance: float) -> float:
@@ -46,11 +84,11 @@ def _keyword_score(content: str, query: str) -> float:
     Fraction of unique query words that appear in the chunk content.
     Case-insensitive exact-word match. Returns a value in [0, 1].
     """
-    query_words = {w.lower() for w in query.split() if w}
+    query_words = _content_tokens(query)
     if not query_words:
         return 0.0
-    content_words = {w.lower() for w in content.split()}
-    hits = len(query_words & content_words)
+    content_words = _content_tokens(content)
+    hits = _match_count(query_words, content_words)
     return hits / len(query_words)
 
 

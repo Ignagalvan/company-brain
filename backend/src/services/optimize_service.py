@@ -1,5 +1,6 @@
 import uuid
 import re
+from urllib.parse import quote
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -61,7 +62,7 @@ def _make_gap_action(item: dict, action_type: str, title: str, description: str,
         "target_id": None,
         "target_topic": topic,
         "cta_label": "Ver gap",
-        "cta_href": "/dashboard/improvement",
+        "cta_href": f"/dashboard/improvement?focus={quote(topic)}",
     }
 
 
@@ -239,6 +240,18 @@ async def get_optimize_recommendations(
         reverse=True,
     )[:5]
 
+    primary_action = None
+    if top_actions:
+        primary_action = sorted(
+            top_actions,
+            key=lambda item: (
+                item["impact_minutes"] + (8 if item["effort_estimate"] == "low" else 0),
+                item["impact_occurrences"],
+                1 if item["target_type"] == "gap" else 0,
+            ),
+            reverse=True,
+        )[0]
+
     quick_wins = [
         action for action in top_actions
         if action["effort_estimate"] == "low" and action["impact_minutes"] >= 6
@@ -273,6 +286,7 @@ async def get_optimize_recommendations(
             "coverage_rate_7d": insights["coverage_rate_7d"],
             "knowledge_health_score": insights["knowledge_health_score"],
         },
+        "primary_action": primary_action,
         "top_actions": top_actions,
         "quick_wins": quick_wins[:3],
         "document_actions": document_actions[:5],

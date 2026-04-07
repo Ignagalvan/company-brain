@@ -74,6 +74,56 @@ def _split_paragraph(paragraph: str, chunk_size: int, overlap: int) -> list[str]
     return chunks
 
 
+def _split_section_paragraphs(
+    paragraphs: list[str],
+    chunk_size: int,
+    overlap: int,
+) -> list[str]:
+    """
+    Build chunks within a single section, keeping adjacent paragraphs and lists
+    together whenever they fit. Overlap is applied later, section-locally.
+    """
+    chunks: list[str] = []
+    current = ""
+
+    for para in paragraphs:
+        para = para.strip()
+        if not para:
+            continue
+
+        candidate = f"{current}\n{para}".strip() if current else para
+        if len(candidate) <= chunk_size:
+            current = candidate
+            continue
+
+        if current:
+            chunks.append(current)
+            current = ""
+
+        if len(para) <= chunk_size:
+            current = para
+            continue
+
+        chunks.extend(_split_paragraph(para, chunk_size, overlap))
+
+    if current:
+        chunks.append(current)
+
+    return chunks
+
+
+def _apply_section_overlap(chunks: list[str], overlap: int) -> list[str]:
+    if overlap <= 0 or len(chunks) <= 1:
+        return chunks
+
+    result: list[str] = [chunks[0]]
+    for chunk in chunks[1:]:
+        tail = _last_sentence(result[-1])
+        prefix = tail if tail else result[-1][-overlap:]
+        result.append((prefix + " " + chunk).strip())
+    return result
+
+
 def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
     if not text:
         return []
@@ -152,72 +202,30 @@ def chunk_text_with_sections(
     if cur_paras:
         sections.append((cur_heading, cur_paras))
 
-    # 3. Build raw chunks from sections
-    raw_chunks: list[dict] = []
+    # 3. Build chunks section-by-section so each chunk stays semantically
+    # self-contained. We never merge across section boundaries.
+    result: list[dict] = []
 
     for heading, paragraphs in sections:
-        for para in paragraphs:
-            if not para.strip():
-                continue
+        cleaned_paragraphs = [p.strip() for p in paragraphs if p.strip()]
+        if not cleaned_paragraphs:
+            continue
 
-            # Merge short paragraphs with the previous chunk in the same section
-            # to avoid near-empty, low-information chunks
-            if (
-                len(para) < MIN_CHUNK_SIZE
-                and raw_chunks
-                and raw_chunks[-1]['section'] == heading
-            ):
-                merged = raw_chunks[-1]['content'] + '\n' + para
-                if len(merged) <= chunk_size:
-                    raw_chunks[-1]['content'] = merged
-                    continue
+        section_chunks = _split_section_paragraphs(cleaned_paragraphs, chunk_size, overlap)
 
-            if len(para) <= chunk_size:
-                raw_chunks.append({'content': para, 'section': heading})
-            else:
-                for sub in _split_paragraph(para, chunk_size, overlap):
-                    raw_chunks.append({'content': sub, 'section': heading})
-
-    if not raw_chunks:
-        return []
-
-    # 3.5 Consolidate adjacent short chunks across sections.
-    # Many structured documents (templates, policies) produce multiple sections
-    # that are each small (< half chunk_size). Keeping them separate means the
-    # judge sees many tiny fragments that individually feel incomplete, causing
-    # "partial" coverage even when the topic is fully covered in aggregate.
-    # Strategy: merge two consecutive chunks when BOTH are below the half-size
-    # threshold and the combined result stays within chunk_size.
-    _HALF_SIZE = chunk_size // 2  # 750 chars at default settings
-
-    consolidated: list[dict] = []
-    for item in raw_chunks:
-        prev = consolidated[-1] if consolidated else None
+        # Avoid tiny trailing chunks inside the same section when they can fit
+        # into the previous section chunk without breaking size limits.
         if (
-            prev is not None
-            and len(prev['content']) < _HALF_SIZE
-            and len(item['content']) < _HALF_SIZE
-            and len(prev['content']) + len(item['content']) + 2 <= chunk_size
+            len(section_chunks) >= 2
+            and len(section_chunks[-1]) < MIN_CHUNK_SIZE
+            and len(section_chunks[-2]) + len(section_chunks[-1]) + 1 <= chunk_size
         ):
-            # Merge: newline separator, keep section from first chunk
-            prev['content'] = prev['content'] + '\n' + item['content']
-        else:
-            consolidated.append({'content': item['content'], 'section': item['section']})
+            section_chunks[-2] = section_chunks[-2] + "\n" + section_chunks[-1]
+            section_chunks.pop()
 
-    raw_chunks = consolidated
+        for content in _apply_section_overlap(section_chunks, overlap):
+            result.append({"content": content, "section": heading})
 
-    # 4. Apply semantic overlap: last sentence of previous chunk
-    if overlap <= 0 or len(raw_chunks) <= 1:
-        return raw_chunks
-
-    result: list[dict] = [raw_chunks[0]]
-    for item in raw_chunks[1:]:
-        tail = _last_sentence(result[-1]['content'])
-        prefix = tail if tail else result[-1]['content'][-overlap:]
-        result.append({
-            'content': (prefix + ' ' + item['content']).strip(),
-            'section': item['section'],
-        })
     return result
 
 

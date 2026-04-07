@@ -16,6 +16,7 @@ from src.schemas.action_suggestion import (
 from src.schemas.draft import DraftRequest, DraftResponse
 from src.schemas.optimize import OptimizeResponse
 from src.schemas.promote_draft import PromoteDraftRequest, PromoteDraftResponse
+from src.schemas.reset_organization import ResetOrganizationRequest, ResetOrganizationResponse
 from src.services.document_draft_service import generate_draft_with_metadata
 from src.services.document_service import ingest_text_as_document
 from src.services.improvement_service import get_improvement_suggestions
@@ -30,6 +31,7 @@ from src.services.knowledge_gap_service import (
     save_gap_draft,
 )
 from src.services.optimize_service import get_optimize_recommendations
+from src.services.reset_organization_service import reset_organization_data
 
 logger = logging.getLogger(__name__)
 
@@ -314,3 +316,12 @@ async def optimize(
 ) -> OptimizeResponse:
     data = await get_optimize_recommendations(db, organization_id)
     return OptimizeResponse(**data)
+
+
+@router.post("/reset-organization", response_model=ResetOrganizationResponse)
+async def reset_organization(
+    body: ResetOrganizationRequest,
+    db: AsyncSession = Depends(get_db),
+) -> ResetOrganizationResponse:
+    data = await reset_organization_data(db, body.organization_id)
+    return ResetOrganizationResponse(**data)

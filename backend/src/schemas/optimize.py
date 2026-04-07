@@ -29,6 +29,7 @@ class OptimizeAction(BaseModel):
 
 class OptimizeResponse(BaseModel):
     summary: OptimizeSummary
+    primary_action: OptimizeAction | None = None
     top_actions: list[OptimizeAction]
     quick_wins: list[OptimizeAction]
     document_actions: list[OptimizeAction]

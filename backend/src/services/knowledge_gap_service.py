@@ -16,6 +16,50 @@ TIME_LOST_MINUTES_BY_COVERAGE = {
     "none": 3,
     "partial": 2,
 }
+_TOPIC_TOKEN_RE = re.compile(r"[a-z0-9]+")
+_TOPIC_STOPWORDS = {
+    "a",
+    "al",
+    "ano",
+    "cada",
+    "con",
+    "cual",
+    "cuales",
+    "cuanto",
+    "cuantos",
+    "da",
+    "dan",
+    "de",
+    "del",
+    "el",
+    "en",
+    "es",
+    "esta",
+    "este",
+    "existe",
+    "existen",
+    "hay",
+    "la",
+    "las",
+    "lo",
+    "los",
+    "me",
+    "mi",
+    "mis",
+    "para",
+    "por",
+    "que",
+    "se",
+    "su",
+    "sus",
+    "tiene",
+    "tienen",
+    "un",
+    "una",
+    "unas",
+    "unos",
+    "y",
+}
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -41,6 +85,156 @@ def _normalize_topic(topic: str) -> str:
     t = unicodedata.normalize("NFD", t).encode("ascii", "ignore").decode()
     t = re.sub(r"[¿?¡!_]", "", t)
     return " ".join(t.split())
+
+
+def _topic_tokens(topic: str) -> list[str]:
+    return [token for token in _TOPIC_TOKEN_RE.findall(_normalize_topic(topic)) if token]
+
+
+def _singularize_token(token: str) -> str:
+    if len(token) > 5 and token.endswith("ies"):
+        return f"{token[:-3]}y"
+    if len(token) > 4 and token.endswith("es") and not token.endswith(("aes", "ees", "oes")):
+        return token[:-2]
+    if len(token) > 3 and token.endswith("s"):
+        return token[:-1]
+    return token
+
+
+def _token_root(token: str) -> str:
+    root = _singularize_token(token)
+    for suffix, replacement in (
+        ("aciones", "acion"),
+        ("iciones", "icion"),
+        ("idades", "idad"),
+        ("mente", ""),
+        ("idad", "idad"),
+    ):
+        if root.endswith(suffix) and len(root) > len(suffix) + 2:
+            root = f"{root[:-len(suffix)]}{replacement}"
+            break
+    if len(root) >= 4 and root[-1] in "aeiou":
+        root = root[:-1]
+    return root
+
+
+def _canonical_terms(topic: str) -> list[tuple[str, str]]:
+    terms: list[tuple[str, str]] = []
+    seen_roots: set[str] = set()
+    for token in _topic_tokens(topic):
+        if token in _TOPIC_STOPWORDS:
+            continue
+        root = _token_root(token)
+        if len(root) < 3 or root in seen_roots:
+            continue
+        seen_roots.add(root)
+        terms.append((token, root))
+    return terms
+
+
+def _topic_similarity(left_topic: str, right_topic: str) -> tuple[float, list[str]]:
+    left_terms = _canonical_terms(left_topic)
+    right_terms = _canonical_terms(right_topic)
+    if not left_terms or not right_terms:
+        return 0.0, []
+
+    right_roots = [root for _, root in right_terms]
+    matched_roots: list[str] = []
+    for _, left_root in left_terms:
+        match = next(
+            (
+                root
+                for root in right_roots
+                if root == left_root or (
+                    min(len(root), len(left_root)) >= 5
+                    and (root.startswith(left_root) or left_root.startswith(root))
+                )
+            ),
+            None,
+        )
+        if match is not None and match not in matched_roots:
+            matched_roots.append(match)
+
+    if not matched_roots:
+        return 0.0, []
+
+    match_count = len(matched_roots)
+    smaller_overlap = match_count / min(len(left_terms), len(right_terms))
+    larger_overlap = match_count / max(len(left_terms), len(right_terms))
+    score = round(smaller_overlap * 0.7 + larger_overlap * 0.3, 4)
+    return score, matched_roots
+
+
+def _are_topics_similar(left_topic: str, right_topic: str) -> bool:
+    score, matched_roots = _topic_similarity(left_topic, right_topic)
+    if not matched_roots:
+        return False
+    if score >= 0.78:
+        return True
+    return len(matched_roots) >= 2 and score >= 0.64
+
+
+def _canonical_topic_label(topics: list[str]) -> str:
+    candidates = [topic for topic in topics if topic and topic.strip()]
+    if not candidates:
+        return ""
+    if len(candidates) == 1:
+        return _normalize_topic(candidates[0])
+
+    shared_roots: set[str] | None = None
+    root_to_tokens: dict[str, set[str]] = {}
+    for topic in candidates:
+        terms = _canonical_terms(topic)
+        topic_roots = {root for _, root in terms}
+        shared_roots = topic_roots if shared_roots is None else shared_roots & topic_roots
+        for token, root in terms:
+            root_to_tokens.setdefault(root, set()).add(token)
+
+    if shared_roots:
+        ordered_terms = []
+        for root in shared_roots:
+            token = min(root_to_tokens[root], key=lambda value: (len(value), value))
+            ordered_terms.append((token, root))
+        ordered_terms.sort(key=lambda item: (-len(item[1]), item[0]))
+        label = " ".join(token for token, _ in ordered_terms[:3]).strip()
+        if label:
+            return label
+
+    return min(
+        (_normalize_topic(topic) for topic in candidates),
+        key=lambda value: (len(_canonical_terms(value)) or 99, len(value), value),
+    )
+
+
+def _merge_raw_gap_entry(existing: dict, incoming: dict) -> dict:
+    total_occurrences = existing["occurrences"] + incoming["occurrences"]
+    existing["avg_score"] = round(
+        (existing["avg_score"] * existing["occurrences"] + incoming["avg_score"] * incoming["occurrences"])
+        / total_occurrences,
+        4,
+    )
+    existing["occurrences"] = total_occurrences
+    if incoming["coverage_type"] == "none":
+        existing["coverage_type"] = "none"
+    if incoming["suggested_action"] == "create_document":
+        existing["suggested_action"] = "create_document"
+    existing_quality_topic = existing.get("quality_topic", existing["topic"])
+    incoming_quality_topic = incoming.get("quality_topic", incoming["topic"])
+    if len(_normalize_topic(incoming_quality_topic)) > len(_normalize_topic(existing_quality_topic)):
+        existing["quality_topic"] = incoming_quality_topic
+    existing["topic"] = _canonical_topic_label([existing["topic"], incoming["topic"]])
+    return existing
+
+
+def _find_similar_gap_entry(items: list[dict], topic: str) -> dict | None:
+    best_item: dict | None = None
+    best_score = 0.0
+    for item in items:
+        score, _ = _topic_similarity(item["topic"], topic)
+        if score > best_score and _are_topics_similar(item["topic"], topic):
+            best_item = item
+            best_score = score
+    return best_item
 
 
 def _now() -> datetime:
@@ -402,29 +596,28 @@ async def get_org_action_suggestions(
     Gaps with status "ignored" or "promoted" are never resurrected.
     """
     raw_gaps = await _get_raw_from_logs(db, organization_id, limit, max_score)
+    for raw in raw_gaps:
+        raw["quality_topic"] = raw["topic"]
 
     # ── Pre-aggregate by normalized_topic ────────────────────────────────────
     # Multiple exact queries can normalize to the same topic (e.g. "¿Cuánto
     # cuesta?" and "Cuanto cuesta"). We merge them before upserting so occurrences
     # reflect the total signal, not just the last query's count.
-    aggregated: dict[str, dict] = {}
+    aggregated: list[dict] = []
     for raw in raw_gaps:
-        norm = _normalize_topic(raw["topic"])
-        if norm in aggregated:
-            existing_agg = aggregated[norm]
-            total_occ = existing_agg["occurrences"] + raw["occurrences"]
-            # weighted average of coverage scores
-            existing_agg["avg_score"] = round(
-                (existing_agg["avg_score"] * existing_agg["occurrences"] +
-                 raw["avg_score"] * raw["occurrences"]) / total_occ, 4
-            )
-            existing_agg["occurrences"] = total_occ
-            # prefer "none" coverage if any variant had no coverage
-            if raw["coverage_type"] == "none":
-                existing_agg["coverage_type"] = "none"
+        existing_agg = _find_similar_gap_entry(aggregated, raw["topic"])
+        if existing_agg is not None:
+            _merge_raw_gap_entry(existing_agg, raw)
         else:
-            aggregated[norm] = dict(raw)
-    raw_gaps = list(aggregated.values())
+            aggregated.append(dict(raw))
+    consolidated: list[dict] = []
+    for raw in aggregated:
+        existing_agg = _find_similar_gap_entry(consolidated, raw["topic"])
+        if existing_agg is not None:
+            _merge_raw_gap_entry(existing_agg, raw)
+        else:
+            consolidated.append(dict(raw))
+    raw_gaps = consolidated
 
     draft_stmt = select(Document.filename).where(
         Document.organization_id == organization_id,
@@ -439,26 +632,33 @@ async def get_org_action_suggestions(
         return any(slug in fname for fname in draft_filenames)
 
     now = _now()
+    existing_gaps = (
+        await db.execute(
+            select(KnowledgeGap).where(KnowledgeGap.organization_id == organization_id)
+        )
+    ).scalars().all()
 
     # ── Upsert gaps ───────────────────────────────────────────────────────────
     for raw in raw_gaps:
-        quality = classify_query_quality(raw["topic"])
+        quality = classify_query_quality(raw.get("quality_topic", raw["topic"]))
         if quality == INVALID:
             continue
 
         normalized = _normalize_topic(raw["topic"])
-        stmt = select(KnowledgeGap).where(
-            KnowledgeGap.organization_id == organization_id,
-            KnowledgeGap.normalized_topic == normalized,
+        existing = next(
+            (
+                gap for gap in existing_gaps
+                if gap.normalized_topic == normalized or _are_topics_similar(gap.topic, raw["topic"])
+            ),
+            None,
         )
-        existing: KnowledgeGap | None = (await db.execute(stmt)).scalar_one_or_none()
 
         score = _compute_priority_score(raw["occurrences"], raw["avg_score"], now)
         priority = _score_to_priority(score, quality)
 
         if existing is not None:
-            if existing.status in ("ignored", "promoted"):
-                continue
+            existing.topic = _canonical_topic_label([existing.topic, raw["topic"]])
+            existing.normalized_topic = _normalize_topic(existing.topic)
             existing.occurrences = raw["occurrences"]
             existing.avg_coverage_score = raw["avg_score"]
             existing.coverage_type = raw["coverage_type"]
@@ -469,10 +669,11 @@ async def get_org_action_suggestions(
             existing.last_seen_at = now
             existing.updated_at = now
         else:
+            canonical_topic = _canonical_topic_label([raw["topic"]])
             gap = KnowledgeGap(
                 organization_id=organization_id,
-                topic=raw["topic"],
-                normalized_topic=normalized,
+                topic=canonical_topic,
+                normalized_topic=_normalize_topic(canonical_topic),
                 status="pending",
                 quality=quality,
                 priority=priority,
@@ -486,6 +687,7 @@ async def get_org_action_suggestions(
                 last_seen_at=now,
             )
             db.add(gap)
+            existing_gaps.append(gap)
 
     await db.commit()
 

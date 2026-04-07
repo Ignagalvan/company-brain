@@ -10,12 +10,38 @@ _SYNONYM_GROUPS: list[list[str]] = [
     ["cuánto cuesta", "precio", "costo"],
     ["teléfono", "contacto", "número"],
     ["servicio", "plataforma", "sistema"],
+    ["medios de pago", "formas de pago", "metodos de pago"],
+    ["email", "correo", "mail"],
+    ["soporte", "ayuda"],
+    ["plan profesional", "plan pro"],
+    ["confidencialidad", "confidencial"],
+    ["evalua el desempeno", "evaluacion de desempeno", "evaluaciones de desempeno"],
+    ["desempeno", "evaluacion"],
+    ["renunciar", "renuncia"],
+    ["aviso", "anticipacion"],
 ]
 
 
 def _normalize(text: str) -> str:
     """Lowercase and strip accents for matching purposes."""
     return unicodedata.normalize("NFD", text.lower()).encode("ascii", "ignore").decode()
+
+
+def _normalize_with_index_map(text: str) -> tuple[str, list[int]]:
+    """
+    Returns (normalized_text, index_map) where each char in normalized_text maps
+    back to the original string index that produced it.
+    """
+    normalized_chars: list[str] = []
+    index_map: list[int] = []
+
+    for original_index, char in enumerate(text):
+        normalized = unicodedata.normalize("NFD", char).encode("ascii", "ignore").decode().lower()
+        for normalized_char in normalized:
+            normalized_chars.append(normalized_char)
+            index_map.append(original_index)
+
+    return "".join(normalized_chars), index_map
 
 
 # Fixes for awkward phrases produced after noun replacement of verb phrases.
@@ -35,7 +61,7 @@ def _fix_phrase(text: str) -> str:
 
 
 def _generate_variants(query: str) -> list[str]:
-    q_norm = _normalize(query)
+    q_norm, q_index_map = _normalize_with_index_map(query)
     variants: list[str] = []
 
     for group in _SYNONYM_GROUPS:
@@ -46,7 +72,9 @@ def _generate_variants(query: str) -> list[str]:
         match = re.search(re.escape(_normalize(matched_term)), q_norm, flags=re.IGNORECASE)
         if not match:
             continue
-        start, end = match.span()
+        norm_start, norm_end = match.span()
+        start = q_index_map[norm_start]
+        end = q_index_map[norm_end - 1] + 1
 
         for replacement in group:
             if replacement == matched_term:
@@ -55,7 +83,10 @@ def _generate_variants(query: str) -> list[str]:
             if variant != query and variant not in variants:
                 variants.append(variant)
             if len(variants) == 2:
-                return variants
+                break
+
+        if len(variants) == 2:
+            return variants
 
     return variants
 

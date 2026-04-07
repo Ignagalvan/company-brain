@@ -19,6 +19,7 @@ def test_optimize_response_structure(client):
     resp = client.get(OPTIMIZE_URL, headers=_h(org))
     data = resp.json()
     assert "summary" in data
+    assert "primary_action" in data
     assert "top_actions" in data
     assert "quick_wins" in data
     assert "document_actions" in data
@@ -40,3 +41,14 @@ def test_optimize_actions_have_required_fields(client):
             assert "effort_estimate" in item
             assert "target_type" in item
             assert "cta_href" in item
+
+
+def test_optimize_primary_action_matches_schema_when_present(client):
+    org = str(uuid.uuid4())
+    resp = client.get(OPTIMIZE_URL, headers=_h(org))
+    data = resp.json()
+    primary = data["primary_action"]
+    if primary is not None:
+        assert "id" in primary
+        assert "title" in primary
+        assert "effort_estimate" in primary

@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { AppShell } from '../../app/components/AppShell'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
@@ -106,6 +107,7 @@ type AppliedItem = {
 
 type ItemStatus =
   | { tag: 'idle' }
+  | { tag: 'ignoring' }
   | { tag: 'ignored' }
   | { tag: 'generating' }
   | { tag: 'draft_ready'; draft: Draft }
@@ -515,6 +517,7 @@ function HighPriorityCard({
   suggestion,
   state,
   editedContent,
+  focused = false,
   onGenerateDraft,
   onPromote,
   onIgnore,
@@ -526,13 +529,17 @@ function HighPriorityCard({
   return (
     <div
       className={[
-        'border-l-4 rounded-r-xl bg-white border border-l-4 shadow-sm transition-colors',
+        'border-l-4 rounded-r-xl bg-white border border-l-4 shadow-sm transition-all duration-300 ease-out',
         state.tag === 'promoted'
           ? 'border-l-emerald-400 border-emerald-200 bg-emerald-50/40'
           : state.tag === 'conflict'
           ? 'border-l-amber-400 border-amber-200 bg-amber-50/30'
+          : state.tag === 'ignoring'
+          ? 'border-l-red-300 border-red-200 bg-red-50/70 scale-[0.99]'
           : state.tag === 'ignored'
-          ? 'border-l-slate-200 border-slate-100 bg-slate-50/60'
+          ? 'border-l-red-200 border-red-100 bg-red-50/60'
+          : focused
+          ? 'border-l-emerald-500 border-emerald-300 bg-emerald-50/40'
           : 'border-l-red-400 border-slate-200',
       ].join(' ')}
     >
@@ -574,9 +581,9 @@ function HighPriorityCard({
         )}
 
         {/* Ignored notice */}
-        {state.tag === 'ignored' && (
-          <div className="mt-3 rounded-lg bg-slate-100 border border-slate-200 px-4 py-2.5 text-[13px] text-slate-500">
-            Gap ignorado.
+        {(state.tag === 'ignoring' || state.tag === 'ignored') && (
+          <div className="mt-3 rounded-lg bg-red-50 border border-red-100 px-4 py-2.5 text-[13px] text-red-600 transition-all duration-300 ease-out">
+            {state.tag === 'ignoring' ? 'Ignorando gap…' : 'Gap ignorado. Esta accion oculta este tema de la lista.'}
           </div>
         )}
 
@@ -630,6 +637,7 @@ function MediumRow({
   suggestion,
   state,
   editedContent,
+  focused = false,
   onGenerateDraft,
   onPromote,
   onIgnore,
@@ -642,13 +650,17 @@ function MediumRow({
   return (
     <div
       className={[
-        'border rounded-xl transition-colors',
+        'border rounded-xl transition-all duration-300 ease-out',
         state.tag === 'promoted'
           ? 'border-emerald-200 bg-emerald-50/40'
           : state.tag === 'conflict'
           ? 'border-amber-200 bg-amber-50/30'
+          : state.tag === 'ignoring'
+          ? 'border-red-200 bg-red-50/70 scale-[0.99]'
           : state.tag === 'ignored'
-          ? 'border-slate-100 bg-slate-50/60'
+          ? 'border-red-100 bg-red-50/60'
+          : focused
+          ? 'border-emerald-300 bg-emerald-50/30'
           : 'border-slate-200 bg-white hover:border-slate-300',
       ].join(' ')}
     >
@@ -744,14 +756,16 @@ function MediumRow({
       )}
 
       {/* Ignored state */}
-      {state.tag === 'ignored' && (
-        <div className="px-4 pb-3 flex items-center justify-between border-t border-slate-100 pt-2.5">
-          <span className="text-[12px] text-slate-400">Ignorado</span>
+      {(state.tag === 'ignoring' || state.tag === 'ignored') && (
+        <div className="px-4 pb-3 flex items-center justify-between border-t border-red-100 pt-2.5 transition-all duration-300 ease-out">
+          <span className="text-[12px] text-red-500">
+            {state.tag === 'ignoring' ? 'Ignorando…' : 'Ignorado'}
+          </span>
           <button
             onClick={onUndo}
-            className="text-[12px] px-2.5 py-1 rounded-md border border-slate-200 text-slate-500 hover:bg-slate-50 transition-colors"
+            className="text-[12px] px-2.5 py-1 rounded-md border border-red-200 text-red-600 hover:bg-red-50 transition-colors"
           >
-            Deshacer
+            Deshacer acción
           </button>
         </div>
       )}
@@ -765,6 +779,7 @@ type SuggestionItemProps = {
   suggestion: Suggestion
   state: ItemStatus
   editedContent: string
+  focused?: boolean
   onGenerateDraft: () => void
   onPromote: () => void
   onIgnore: () => void
@@ -872,13 +887,13 @@ function ItemActions({
     )
   }
 
-  if (state.tag === 'ignored') {
+  if (state.tag === 'ignoring' || state.tag === 'ignored') {
     return (
       <button
         onClick={onUndo}
-        className={`${btnBase} border border-slate-200 text-slate-600 hover:bg-slate-50`}
+        className={`${btnBase} border border-red-200 text-red-600 hover:bg-red-50`}
       >
-        Deshacer
+        Deshacer acción
       </button>
     )
   }
@@ -1055,6 +1070,7 @@ function RecentlyApplied({
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function ImprovementPage() {
+  const searchParams = useSearchParams()
   const [suggestions, setSuggestions] = useState<Suggestion[]>([])
   const [insights, setInsights] = useState<Insights | null>(null)
   const [quickWins, setQuickWins] = useState<QuickWin[]>([])
@@ -1069,6 +1085,8 @@ export default function ImprovementPage() {
   const [showLowQuality, setShowLowQuality] = useState(false)
   const [sort, setSort] = useState<SortKey>('impact')
   const undoTimers = useState<Record<string, ReturnType<typeof setTimeout>>>(() => ({}))[0]
+  const ignoringTimers = useState<Record<string, ReturnType<typeof setTimeout>>>(() => ({}))[0]
+  const focusTopic = searchParams.get('focus')
 
   useEffect(() => {
     Promise.all([
@@ -1137,7 +1155,19 @@ export default function ImprovementPage() {
         body: JSON.stringify({ topic }),
       })
     } catch {}
-    setItemState(topic, { tag: 'ignored' })
+    if (undoTimers[topic]) {
+      clearTimeout(undoTimers[topic])
+      delete undoTimers[topic]
+    }
+    if (ignoringTimers[topic]) {
+      clearTimeout(ignoringTimers[topic])
+      delete ignoringTimers[topic]
+    }
+    setItemState(topic, { tag: 'ignoring' })
+    ignoringTimers[topic] = setTimeout(() => {
+      setItemState(topic, { tag: 'ignored' })
+      delete ignoringTimers[topic]
+    }, 280)
     const timer = setTimeout(() => dismiss(topic), 5000)
     undoTimers[topic] = timer
   }
@@ -1146,6 +1176,10 @@ export default function ImprovementPage() {
     if (undoTimers[topic]) {
       clearTimeout(undoTimers[topic])
       delete undoTimers[topic]
+    }
+    if (ignoringTimers[topic]) {
+      clearTimeout(ignoringTimers[topic])
+      delete ignoringTimers[topic]
     }
     try {
       const res = await fetch(`${API_URL}/internal/action-suggestions/undo`, {
@@ -1225,7 +1259,12 @@ export default function ImprovementPage() {
 
   // ── Sorted and split ──────────────────────────────────────────────────────
 
-  const allSorted = sortSuggestions(suggestions, sort)
+  const allSorted = sortSuggestions(suggestions, sort).sort((a, b) => {
+    if (!focusTopic) return 0
+    if (a.topic === focusTopic) return -1
+    if (b.topic === focusTopic) return 1
+    return 0
+  })
   const highPriority = allSorted.filter(s => s.priority === 'high')
   const mediumPriority = allSorted.filter(s => s.priority === 'medium')
   const lowQuality = allSorted.filter(s => s.priority === 'low_quality')
@@ -1236,6 +1275,7 @@ export default function ImprovementPage() {
       suggestion: s,
       state: getState(s.topic),
       editedContent: draftEdits[s.topic] ?? '',
+      focused: s.topic === focusTopic,
       onGenerateDraft: () => handleGenerateDraft(s.topic),
       onPromote: () => handlePromote(s),
       onIgnore: () => handleIgnore(s.topic),

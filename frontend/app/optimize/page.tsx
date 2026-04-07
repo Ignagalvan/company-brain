@@ -33,6 +33,7 @@ type OptimizePayload = {
     coverage_rate_7d: number
     knowledge_health_score: number
   }
+  primary_action: OptimizeAction | null
   top_actions: OptimizeAction[]
   quick_wins: OptimizeAction[]
   document_actions: OptimizeAction[]
@@ -60,6 +61,7 @@ function SummaryMetric({ label, value, sub }: { label: string; value: string; su
 }
 
 function ActionCard({ action }: { action: OptimizeAction }) {
+  const hasMeasuredImpact = action.impact_minutes > 0
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-4">
       <div className="flex flex-wrap items-center gap-2">
@@ -73,8 +75,13 @@ function ActionCard({ action }: { action: OptimizeAction }) {
       <h3 className="mt-3 text-[16px] font-semibold text-slate-900">{action.title}</h3>
       <p className="mt-2 text-[14px] leading-relaxed text-slate-600">{action.description}</p>
       <div className="mt-3 flex flex-wrap gap-2">
-        <span className="rounded-full bg-red-50 px-2.5 py-1 text-[12px] font-medium text-red-700">
-          Impacto {formatMinutes(action.impact_minutes)}
+        <span
+          className={[
+            'rounded-full px-2.5 py-1 text-[12px] font-medium',
+            hasMeasuredImpact ? 'bg-red-50 text-red-700' : 'bg-slate-100 text-slate-600',
+          ].join(' ')}
+        >
+          {hasMeasuredImpact ? `Impacto ${formatMinutes(action.impact_minutes)}` : 'Impacto no cuantificado'}
         </span>
         {action.impact_occurrences > 0 && (
           <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[12px] font-medium text-slate-600">
@@ -83,6 +90,11 @@ function ActionCard({ action }: { action: OptimizeAction }) {
         )}
       </div>
       <p className="mt-3 text-[13px] leading-relaxed text-slate-500">{action.reason}</p>
+      {!hasMeasuredImpact && (
+        <p className="mt-2 text-[12px] leading-relaxed text-slate-400">
+          Esta acción sigue siendo útil, pero hoy el sistema no puede estimar ahorro en minutos con la señal disponible.
+        </p>
+      )}
       <div className="mt-4">
         <Link
           href={action.cta_href}
@@ -173,6 +185,42 @@ export default function OptimizePage() {
               </div>
             )}
           </section>
+
+          {data?.primary_action && (
+            <section className="mb-6 rounded-3xl border border-emerald-200 bg-gradient-to-br from-emerald-50 via-white to-white p-5 sm:p-6">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-emerald-700">Empezá por acá</p>
+              <div className="mt-3 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                <div className="max-w-3xl">
+                  <h2 className="text-[22px] font-semibold tracking-tight text-slate-900">{data.primary_action.title}</h2>
+                  <p className="mt-2 text-[15px] leading-relaxed text-slate-600">{data.primary_action.description}</p>
+                  <p className="mt-3 text-[13px] leading-relaxed text-slate-500">
+                    {data.primary_action.reason} Esta es la mejor primera acción por combinación de impacto y esfuerzo estimado.
+                  </p>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <span className="rounded-full bg-white px-2.5 py-1 text-[12px] font-medium text-slate-700 border border-slate-200">
+                      {data.primary_action.impact_minutes > 0 ? `Impacto ${formatMinutes(data.primary_action.impact_minutes)}` : 'Impacto no cuantificado'}
+                    </span>
+                    <span className={`rounded-full px-2.5 py-1 text-[12px] font-medium ${effortTone(data.primary_action.effort_estimate)}`}>
+                      Esfuerzo {data.primary_action.effort_estimate}
+                    </span>
+                    {data.primary_action.impact_occurrences > 0 && (
+                      <span className="rounded-full bg-white px-2.5 py-1 text-[12px] font-medium text-slate-700 border border-slate-200">
+                        {data.primary_action.impact_occurrences} consultas
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="shrink-0">
+                  <Link
+                    href={data.primary_action.cta_href}
+                    className="inline-flex items-center rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white hover:bg-slate-700 transition-colors"
+                  >
+                    {data.primary_action.cta_label}
+                  </Link>
+                </div>
+              </div>
+            </section>
+          )}
 
           {loading && (
             <div className="space-y-3">
