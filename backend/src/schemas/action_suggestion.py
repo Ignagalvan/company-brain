@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field
 
 class ActionSuggestion(BaseModel):
     topic: str
+    display_label: str
     status: str
     coverage_type: str
     priority: str
@@ -22,6 +23,7 @@ class ActionSuggestion(BaseModel):
 
 class RecentlyAppliedItem(BaseModel):
     topic: str
+    display_label: str | None = None
     coverage_type: str
     chunks_created: int
     promoted_at: str
@@ -31,6 +33,7 @@ class RecentlyAppliedItem(BaseModel):
 
 class QuickWin(BaseModel):
     topic: str
+    display_label: str
     coverage_type: str
     priority: str
     priority_score: float
@@ -43,6 +46,7 @@ class Recommendation(BaseModel):
     kind: str
     title: str
     topic: str
+    display_label: str
     reason: str
     estimated_time_saved_if_resolved_minutes: int
     occurrences: int
@@ -65,6 +69,7 @@ class ActionTopicRequest(BaseModel):
 
 class TopicInsight(BaseModel):
     topic: str
+    display_label: str | None = None
     coverage_type: str
     occurrences: int
     priority_score: float

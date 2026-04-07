@@ -15,6 +15,7 @@ const HEADERS = {
 
 type Suggestion = {
   topic: string
+  display_label: string
   status: 'pending' | 'conflict'
   coverage_type: 'none' | 'partial'
   priority: 'high' | 'medium' | 'low_quality'
@@ -46,6 +47,7 @@ type Insights = {
   knowledge_health_score: number
   top_topics: Array<{
     topic: string
+    display_label?: string
     coverage_type: string
     occurrences: number
     priority_score: number
@@ -56,6 +58,7 @@ type Insights = {
 
 type QuickWin = {
   topic: string
+  display_label: string
   coverage_type: 'none' | 'partial'
   priority: 'high' | 'medium' | 'low_quality'
   priority_score: number
@@ -68,6 +71,7 @@ type Recommendation = {
   kind: string
   title: string
   topic: string
+  display_label: string
   reason: string
   estimated_time_saved_if_resolved_minutes: number
   occurrences: number
@@ -98,6 +102,7 @@ type PromoteResult = {
 
 type AppliedItem = {
   topic: string
+  display_label?: string
   coverage_type: 'none' | 'partial'
   chunks_created: number
   promoted_at: string
@@ -250,7 +255,7 @@ function InsightsBar({ insights }: { insights: Insights | null }) {
       <MetricCard
         label="Alta prioridad"
         value={String(insights.high_priority_count)}
-        sub={topTopic ? `"${topTopic.topic.length > 22 ? topTopic.topic.slice(0, 22) + '…' : topTopic.topic}"` : undefined}
+        sub={topTopic ? `"${(topTopic.display_label ?? topTopic.topic).length > 22 ? (topTopic.display_label ?? topTopic.topic).slice(0, 22) + '…' : (topTopic.display_label ?? topTopic.topic)}"` : undefined}
         valueColor={insights.high_priority_count > 0 ? 'text-red-500 font-bold' : 'text-slate-400'}
       />
       <MetricCard
@@ -304,7 +309,7 @@ function BusinessInsightsBar({ insights }: { insights: Insights | null }) {
       <MetricCard
         label="Consultas 7d"
         value={String(insights.total_queries_analyzed)}
-        sub={topTopic ? `Top gap: ${topTopic.topic.length > 18 ? `${topTopic.topic.slice(0, 18)}...` : topTopic.topic}` : 'Sin gaps destacados'}
+        sub={topTopic ? `Top gap: ${(topTopic.display_label ?? topTopic.topic).length > 18 ? `${(topTopic.display_label ?? topTopic.topic).slice(0, 18)}...` : (topTopic.display_label ?? topTopic.topic)}` : 'Sin gaps destacados'}
         valueColor={insights.total_queries_analyzed > 0 ? 'text-slate-900' : 'text-slate-400'}
       />
       <MetricCard
@@ -380,7 +385,7 @@ function QuickWinsPanel({ items }: { items: QuickWin[] }) {
         {items.map((item, index) => (
           <div key={item.topic} className="rounded-xl border border-emerald-100 bg-white p-4">
             <p className="text-[11px] font-semibold uppercase tracking-wide text-emerald-600">#{index + 1} Quick win</p>
-            <p className="mt-2 text-[14px] font-semibold text-slate-900 leading-snug">{item.topic}</p>
+            <p className="mt-2 text-[14px] font-semibold text-slate-900 leading-snug">{item.display_label ?? item.topic}</p>
             <p className="mt-2 text-[13px] text-slate-600 leading-relaxed">{item.summary}</p>
             <div className="mt-3 flex flex-wrap gap-2 text-[12px]">
               <span className="rounded-full bg-slate-100 px-2 py-1 text-slate-600">{item.occurrences} {consultasLabel(item.occurrences)}</span>
@@ -408,7 +413,7 @@ function RecommendationsPanel({ items }: { items: Recommendation[] }) {
               <p className="text-[12px] font-semibold text-slate-700">{item.title}</p>
               <span className="text-[11px] text-slate-500">{formatMinutes(item.estimated_time_saved_if_resolved_minutes)}</span>
             </div>
-            <p className="mt-1 text-[13px] font-medium text-slate-900">{item.topic}</p>
+            <p className="mt-1 text-[13px] font-medium text-slate-900">{item.display_label ?? item.topic}</p>
             <p className="mt-1 text-[12px] leading-relaxed text-slate-500">{item.reason}</p>
           </div>
         ))}
@@ -526,6 +531,40 @@ function HighPriorityCard({
 }: SuggestionItemProps) {
   const s = suggestion
 
+  if (state.tag === 'ignoring' || state.tag === 'ignored') {
+    return (
+      <div
+        className={[
+          'border-l-4 rounded-r-xl border shadow-sm transition-all duration-300 ease-out',
+          state.tag === 'ignoring'
+            ? 'border-l-red-300 border-red-200 bg-red-50/70 scale-[0.99]'
+            : 'border-l-red-200 border-red-100 bg-red-50/60',
+        ].join(' ')}
+      >
+        <div className="px-5 py-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <p className="text-[15px] font-semibold text-slate-900 leading-snug break-words">{s.display_label ?? s.topic}</p>
+              <p className="mt-1.5 text-[13px] text-red-600">
+                {state.tag === 'ignoring'
+                  ? 'Ignorando gap...'
+                  : 'Gap ignorado. Esta accion oculta este tema de la lista.'}
+              </p>
+            </div>
+            {state.tag === 'ignored' && (
+              <button
+                onClick={onUndo}
+                className="shrink-0 text-[12px] px-2.5 py-1.5 rounded-md border border-red-200 text-red-600 hover:bg-red-50 transition-colors"
+              >
+                Deshacer acción
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div
       className={[
@@ -534,10 +573,6 @@ function HighPriorityCard({
           ? 'border-l-emerald-400 border-emerald-200 bg-emerald-50/40'
           : state.tag === 'conflict'
           ? 'border-l-amber-400 border-amber-200 bg-amber-50/30'
-          : state.tag === 'ignoring'
-          ? 'border-l-red-300 border-red-200 bg-red-50/70 scale-[0.99]'
-          : state.tag === 'ignored'
-          ? 'border-l-red-200 border-red-100 bg-red-50/60'
           : focused
           ? 'border-l-emerald-500 border-emerald-300 bg-emerald-50/40'
           : 'border-l-red-400 border-slate-200',
@@ -547,7 +582,7 @@ function HighPriorityCard({
         {/* Topic + badges row */}
         <div className="flex items-start gap-3 min-w-0">
           <div className="flex-1 min-w-0">
-            <p className="text-[15px] font-semibold text-slate-900 leading-snug break-words">{s.topic}</p>
+            <p className="text-[15px] font-semibold text-slate-900 leading-snug break-words">{s.display_label ?? s.topic}</p>
             <div className="flex items-center gap-2 mt-1.5 flex-wrap">
               <CoverageBadge type={s.coverage_type} />
               {s.status === 'conflict' && <StatusChip status="conflict" />}
@@ -645,6 +680,40 @@ function MediumRow({
   onEditContent,
 }: SuggestionItemProps) {
   const s = suggestion
+
+  if (state.tag === 'ignoring' || state.tag === 'ignored') {
+    return (
+      <div
+        className={[
+          'border rounded-xl transition-all duration-300 ease-out',
+          state.tag === 'ignoring'
+            ? 'border-red-200 bg-red-50/70 scale-[0.99]'
+            : 'border-red-100 bg-red-50/60',
+        ].join(' ')}
+      >
+        <div className="flex items-center gap-3 px-4 py-3 min-w-0">
+          <PriorityDot priority={s.priority} />
+          <div className="flex-1 min-w-0">
+            <p className="text-[14px] font-medium text-slate-800 truncate leading-tight">{s.display_label ?? s.topic}</p>
+            <p className="text-[12px] text-red-500 mt-0.5 leading-tight">
+              {state.tag === 'ignoring'
+                ? 'Ignorando...'
+                : 'Ignorado. Este gap queda oculto hasta deshacer la accion.'}
+            </p>
+          </div>
+          {state.tag === 'ignored' && (
+            <button
+              onClick={onUndo}
+              className="shrink-0 text-[12px] px-2.5 py-1 rounded-md border border-red-200 text-red-600 hover:bg-red-50 transition-colors"
+            >
+              Deshacer acción
+            </button>
+          )}
+        </div>
+      </div>
+    )
+  }
+
   const expanded = state.tag === 'draft_ready' || state.tag === 'promoting' || state.tag === 'promoted' || state.tag === 'conflict' || state.tag === 'validation_error' || state.tag === 'error'
 
   return (
@@ -668,7 +737,7 @@ function MediumRow({
       <div className="flex items-center gap-3 px-4 py-3 min-w-0">
         <PriorityDot priority={s.priority} />
         <div className="flex-1 min-w-0">
-          <p className="text-[14px] font-medium text-slate-800 truncate leading-tight">{s.topic}</p>
+          <p className="text-[14px] font-medium text-slate-800 truncate leading-tight">{s.display_label ?? s.topic}</p>
           <p className="text-[12px] text-slate-400 mt-0.5 leading-tight">{explainGap(s)}</p>
           <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
             <span className="rounded-full bg-slate-100 px-2 py-1 text-slate-600">{s.occurrences} {consultasLabel(s.occurrences)}</span>
@@ -999,7 +1068,7 @@ function LowQualitySection({
             <FadingWrapper key={item.topic} fading={fadingOut.has(item.topic)}>
               <div className="flex items-center gap-3 px-4 py-2.5 rounded-lg border border-slate-100 bg-white">
                 <div className="flex-1 min-w-0">
-                  <p className="text-[13px] text-slate-500 truncate">{item.topic}</p>
+                  <p className="text-[13px] text-slate-500 truncate">{item.display_label ?? item.topic}</p>
                   <p className="text-[11px] text-slate-400">{item.occurrences} vez · baja calidad</p>
                 </div>
                 <button
@@ -1053,7 +1122,7 @@ function RecentlyApplied({
             >
               <span className="text-emerald-500 shrink-0 text-sm">✓</span>
               <div className="min-w-0 flex-1">
-                <p className="text-[13px] font-medium text-slate-700 truncate">{item.topic}</p>
+                <p className="text-[13px] font-medium text-slate-700 truncate">{item.display_label ?? item.topic}</p>
                 <p className="text-[11px] text-slate-400 mt-0.5">
                   {item.chunks_created} fragmentos · {item.coverage_type === 'none' ? 'sin cobertura' : 'parcial'} → documentado · {formatMinutes(item.estimated_time_saved_if_resolved_minutes)} recuperables
                 </p>
@@ -1240,6 +1309,7 @@ export default function ImprovementPage() {
         [
           {
             topic: suggestion.topic,
+            display_label: suggestion.display_label,
             coverage_type: suggestion.coverage_type,
             chunks_created: result.chunks_created,
             promoted_at: result.promoted_at,

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.models.document import Document
 from src.models.knowledge_gap import KnowledgeGap
 from src.models.query_log import QueryLog
+from src.services.query_normalization import clean_query_text, normalized_query_key
 from src.services.query_quality import INVALID, LOW_QUALITY, classify_query_quality
 
 
@@ -22,13 +23,24 @@ _TOPIC_STOPWORDS = {
     "al",
     "ano",
     "cada",
+    "como",
     "con",
+    "cual",
+    "cuanta",
+    "cuantas",
     "cual",
     "cuales",
     "cuanto",
+    "cuanta",
+    "cuanto",
     "cuantos",
+    "cuntos",
+    "cul",
     "da",
     "dan",
+    "dia",
+    "dias",
+    "das",
     "de",
     "del",
     "el",
@@ -48,6 +60,8 @@ _TOPIC_STOPWORDS = {
     "mis",
     "para",
     "por",
+    "puede",
+    "pueden",
     "que",
     "se",
     "su",
@@ -60,6 +74,22 @@ _TOPIC_STOPWORDS = {
     "unos",
     "y",
 }
+_TOPIC_DISPLAY_BY_ROOT = {
+    "bon": "bono",
+    "bonu": "bono",
+    "llam": "nombre",
+    "nombr": "nombre",
+    "empres": "empresa",
+    "empes": "empresa",
+    "salari": "salario",
+    "mnim": "minimo",
+    "minim": "minimo",
+    "vacacion": "vacaciones",
+    "trabaj": "trabajo",
+    "trabajar": "trabajo",
+    "remot": "remoto",
+}
+_TOPIC_WEAK_MODIFIERS = {"anual", "fin", "ano", "vigente", "mensual"}
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -81,7 +111,7 @@ def _normalize_topic(topic: str) -> str:
       "cuanto cuesta el servicio_"   → "cuanto cuesta el servicio"
       "¿Cuál es el teléfono?"        → "cual es el telefono"
     """
-    t = topic.strip().lower()
+    t = clean_query_text(topic).strip().lower()
     t = unicodedata.normalize("NFD", t).encode("ascii", "ignore").decode()
     t = re.sub(r"[¿?¡!_]", "", t)
     return " ".join(t.split())
@@ -118,6 +148,73 @@ def _token_root(token: str) -> str:
     return root
 
 
+def _edit_distance(left: str, right: str) -> int:
+    if left == right:
+        return 0
+    if not left:
+        return len(right)
+    if not right:
+        return len(left)
+
+    rows = len(left) + 1
+    cols = len(right) + 1
+    dp = [[0] * cols for _ in range(rows)]
+
+    for i in range(rows):
+        dp[i][0] = i
+    for j in range(cols):
+        dp[0][j] = j
+
+    for i in range(1, rows):
+        for j in range(1, cols):
+            cost = 0 if left[i - 1] == right[j - 1] else 1
+            dp[i][j] = min(
+                dp[i - 1][j] + 1,
+                dp[i][j - 1] + 1,
+                dp[i - 1][j - 1] + cost,
+            )
+            if (
+                i > 1
+                and j > 1
+                and left[i - 1] == right[j - 2]
+                and left[i - 2] == right[j - 1]
+            ):
+                dp[i][j] = min(dp[i][j], dp[i - 2][j - 2] + 1)
+
+    return dp[-1][-1]
+
+
+def _is_terminal_morph_variant(left: str, right: str) -> bool:
+    if len(left) != len(right) or len(left) < 5:
+        return False
+    return left[:-1] == right[:-1] and left[-1] != right[-1]
+
+
+def _is_typo_similar(left: str, right: str) -> bool:
+    left = left.strip().lower()
+    right = right.strip().lower()
+    if left == right:
+        return True
+    if min(len(left), len(right)) < 3:
+        return False
+    if _is_terminal_morph_variant(left, right):
+        return False
+
+    distance = _edit_distance(left, right)
+    max_len = max(len(left), len(right))
+    if distance == 1:
+        if abs(len(left) - len(right)) == 1:
+            longer, shorter = (left, right) if len(left) > len(right) else (right, left)
+            if longer.endswith(shorter):
+                return False
+            if len(shorter) >= 4 and longer.startswith(shorter):
+                return False
+        return True
+    if distance == 2 and max_len >= 8 and distance / max_len <= 0.2:
+        return True
+    return False
+
+
 def _canonical_terms(topic: str) -> list[tuple[str, str]]:
     terms: list[tuple[str, str]] = []
     seen_roots: set[str] = set()
@@ -132,28 +229,53 @@ def _canonical_terms(topic: str) -> list[tuple[str, str]]:
     return terms
 
 
+def _canonical_display_terms(topic: str) -> list[str]:
+    display_terms: list[str] = []
+    seen_terms: set[str] = set()
+    for token, root in _canonical_terms(topic):
+        display = _TOPIC_DISPLAY_BY_ROOT.get(root, token)
+        if display in seen_terms:
+            continue
+        seen_terms.add(display)
+        display_terms.append(display)
+
+    if len(display_terms) > 1:
+        strong_terms = [term for term in display_terms if term not in _TOPIC_WEAK_MODIFIERS]
+        if strong_terms:
+            display_terms = strong_terms
+
+    return display_terms
+
+
+def _roots_match(left_root: str, right_root: str) -> bool:
+    return left_root != right_root and _is_typo_similar(left_root, right_root)
+
+
 def _topic_similarity(left_topic: str, right_topic: str) -> tuple[float, list[str]]:
     left_terms = _canonical_terms(left_topic)
     right_terms = _canonical_terms(right_topic)
     if not left_terms or not right_terms:
         return 0.0, []
 
-    right_roots = [root for _, root in right_terms]
+    unmatched_right = list(right_terms)
     matched_roots: list[str] = []
-    for _, left_root in left_terms:
+    for left_token, left_root in left_terms:
         match = next(
             (
-                root
-                for root in right_roots
-                if root == left_root or (
-                    min(len(root), len(left_root)) >= 5
-                    and (root.startswith(left_root) or left_root.startswith(root))
+                (right_token, right_root)
+                for right_token, right_root in unmatched_right
+                if (
+                    left_root == right_root
+                    and not _is_terminal_morph_variant(left_token, right_token)
                 )
+                or _is_typo_similar(left_token, right_token)
+                or _roots_match(left_root, right_root)
             ),
             None,
         )
-        if match is not None and match not in matched_roots:
-            matched_roots.append(match)
+        if match is not None and match[1] not in matched_roots:
+            matched_roots.append(match[1])
+            unmatched_right.remove(match)
 
     if not matched_roots:
         return 0.0, []
@@ -179,23 +301,42 @@ def _canonical_topic_label(topics: list[str]) -> str:
     if not candidates:
         return ""
     if len(candidates) == 1:
+        display_terms = _canonical_display_terms(candidates[0])
+        if display_terms:
+            return " ".join(display_terms[:2])
         return _normalize_topic(candidates[0])
 
-    shared_roots: set[str] | None = None
     root_to_tokens: dict[str, set[str]] = {}
-    for topic in candidates:
-        terms = _canonical_terms(topic)
-        topic_roots = {root for _, root in terms}
-        shared_roots = topic_roots if shared_roots is None else shared_roots & topic_roots
-        for token, root in terms:
-            root_to_tokens.setdefault(root, set()).add(token)
+    candidate_terms = [_canonical_terms(topic) for topic in candidates]
+    shared_roots: list[str] = []
+    if candidate_terms:
+        base_terms = candidate_terms[0]
+        for _, base_root in base_terms:
+            matched_everywhere = True
+            for terms in candidate_terms[1:]:
+                match = next((root for _, root in terms if root == base_root or _roots_match(base_root, root)), None)
+                if match is None:
+                    matched_everywhere = False
+                    break
+                for token, root in terms:
+                    if root == base_root or _roots_match(base_root, root):
+                        root_to_tokens.setdefault(base_root, set()).add(token)
+            if matched_everywhere:
+                for terms in candidate_terms:
+                    for token, root in terms:
+                        if root == base_root or _roots_match(base_root, root):
+                            root_to_tokens.setdefault(base_root, set()).add(token)
+                if base_root not in shared_roots:
+                    shared_roots.append(base_root)
 
     if shared_roots:
         ordered_terms = []
         for root in shared_roots:
-            token = min(root_to_tokens[root], key=lambda value: (len(value), value))
-            ordered_terms.append((token, root))
-        ordered_terms.sort(key=lambda item: (-len(item[1]), item[0]))
+            display = _TOPIC_DISPLAY_BY_ROOT.get(root)
+            if display is None:
+                display = min(root_to_tokens[root], key=lambda value: (len(value), value))
+            ordered_terms.append((display, root))
+        ordered_terms.sort(key=lambda item: (0 if item[0] == "nombre" else 1, -len(item[1]), item[0]))
         label = " ".join(token for token, _ in ordered_terms[:3]).strip()
         if label:
             return label
@@ -204,6 +345,69 @@ def _canonical_topic_label(topics: list[str]) -> str:
         (_normalize_topic(topic) for topic in candidates),
         key=lambda value: (len(_canonical_terms(value)) or 99, len(value), value),
     )
+
+
+def _capitalize_question(label: str) -> str:
+    if not label:
+        return label
+    if label.startswith("¿") and len(label) > 1:
+        return f"¿{label[1:2].upper()}{label[2:]}"
+    return f"{label[:1].upper()}{label[1:]}"
+
+
+def _humanize_query_label(query: str) -> str:
+    cleaned = clean_query_text(query)
+    if not cleaned:
+        return ""
+    plain = cleaned.strip().strip("?").strip()
+    if not plain:
+        return ""
+    label = plain
+    question_tokens = {"como", "cual", "cuanto", "cuantos", "cuanta", "cuantas", "hay", "se", "que"}
+    normalized_tokens = set(_topic_tokens(plain))
+    if normalized_tokens & question_tokens or " " in plain:
+        label = f"¿{plain.rstrip('?')}?"
+    return _capitalize_question(label)
+
+
+def _build_visible_gap_label(queries: list[str], internal_topic: str) -> str:
+    cleaned_queries = [clean_query_text(query) for query in queries if query and clean_query_text(query)]
+    topic_terms = set(_canonical_display_terms(internal_topic))
+    query_tokens = {
+        token
+        for query in cleaned_queries
+        for token in _topic_tokens(query)
+    }
+
+    if internal_topic == "nombre empresa" or ({"nombre", "empresa"} <= topic_terms):
+        return "¿Cómo se llama la empresa?"
+    if "vacaciones" in topic_terms and {"cuanto", "cuantos", "dia", "dias"} & query_tokens:
+        return "¿Cuántos días de vacaciones tienen los empleados?"
+    if topic_terms == {"bono"}:
+        if {"anual", "ano", "fin"} & query_tokens:
+            return "¿La empresa ofrece bono anual?"
+        return "¿La empresa ofrece bono?"
+
+    scored_candidates: list[tuple[int, int, str]] = []
+    for query in cleaned_queries:
+        normalized = _normalize_topic(query)
+        score = 0
+        if query.startswith("¿") or query.endswith("?"):
+            score += 3
+        if len(_topic_tokens(query)) >= 3:
+            score += 2
+        if topic_terms and topic_terms <= set(_canonical_display_terms(query)):
+            score += 2
+        scored_candidates.append((score, len(query), query))
+
+    if scored_candidates:
+        _, _, best = max(scored_candidates)
+        humanized = _humanize_query_label(best)
+        if humanized:
+            return humanized
+
+    fallback_topic = internal_topic if internal_topic else "este tema"
+    return _capitalize_question(f"¿Hay información sobre {fallback_topic}?")
 
 
 def _merge_raw_gap_entry(existing: dict, incoming: dict) -> dict:
@@ -222,7 +426,10 @@ def _merge_raw_gap_entry(existing: dict, incoming: dict) -> dict:
     incoming_quality_topic = incoming.get("quality_topic", incoming["topic"])
     if len(_normalize_topic(incoming_quality_topic)) > len(_normalize_topic(existing_quality_topic)):
         existing["quality_topic"] = incoming_quality_topic
-    existing["topic"] = _canonical_topic_label([existing["topic"], incoming["topic"]])
+    existing.setdefault("observed_queries", [])
+    existing["observed_queries"].extend(incoming.get("observed_queries", []))
+    existing["topic"] = _canonical_topic_label(existing["observed_queries"] or [existing["topic"], incoming["topic"]])
+    existing["display_label"] = _build_visible_gap_label(existing["observed_queries"], existing["topic"])
     return existing
 
 
@@ -288,7 +495,8 @@ def _format_gap_metrics(
 ) -> dict:
     estimated_time_lost_minutes = _estimated_time_lost_minutes(gap.occurrences, gap.coverage_type)
     return {
-        "topic": gap.topic,
+        "topic": gap.normalized_topic,
+        "display_label": gap.topic,
         "status": gap.status,
         "coverage_type": gap.coverage_type,
         "priority": gap.priority,
@@ -330,6 +538,7 @@ def _build_quick_wins(suggestions: list[dict], limit: int = 3) -> list[dict]:
     return [
         {
             "topic": item["topic"],
+            "display_label": item.get("display_label", item["topic"]),
             "coverage_type": item["coverage_type"],
             "priority": item["priority"],
             "priority_score": item["priority_score"],
@@ -351,6 +560,7 @@ def _build_recommendations(suggestions: list[dict]) -> list[dict]:
             "kind": kind,
             "title": title,
             "topic": item["topic"],
+            "display_label": item.get("display_label", item["topic"]),
             "reason": reason,
             "estimated_time_saved_if_resolved_minutes": item["estimated_time_saved_if_resolved_minutes"],
             "occurrences": item["occurrences"],
@@ -518,66 +728,110 @@ async def _get_raw_from_logs(
     limit: int,
     max_score: float,
 ) -> list[dict]:
-    """Read unanswered and weak queries from QueryLog."""
-    unanswered_stmt = (
+    """
+    Read currently-active unanswered and weak queries from QueryLog.
+
+    Only the latest outcome per exact query is considered active. Historical
+    "none"/"partial" rows are ignored once the same query is later answered
+    with strong coverage.
+    """
+    latest_logs_stmt = (
         select(
             QueryLog.query,
-            func.count().label("count"),
-            func.avg(QueryLog.coverage_score).label("avg_score"),
+            QueryLog.coverage,
+            QueryLog.coverage_score,
+            QueryLog.created_at,
         )
-        .where(QueryLog.coverage == "none", QueryLog.organization_id == organization_id)
-        .group_by(QueryLog.query)
-        .order_by(func.count().desc())
-        .limit(limit)
+        .where(QueryLog.organization_id == organization_id)
+        .order_by(QueryLog.created_at.asc())
     )
+    rows = (await db.execute(latest_logs_stmt)).fetchall()
 
-    weak_stmt = (
-        select(
-            QueryLog.query,
-            func.count().label("count"),
-            func.avg(QueryLog.coverage_score).label("avg_score"),
-        )
-        .where(
-            and_(
-                QueryLog.organization_id == organization_id,
-                QueryLog.coverage != "none",
-                or_(QueryLog.coverage == "partial", QueryLog.coverage_score <= max_score),
-            )
-        )
-        .group_by(QueryLog.query)
-        .order_by(func.avg(QueryLog.coverage_score).asc(), func.count().desc())
-        .limit(limit)
-    )
+    latest_rows_by_query: dict[str, object] = {}
+    for row in rows:
+        normalized_query = normalized_query_key(row.query or "")
+        if not normalized_query:
+            continue
+        latest_rows_by_query[normalized_query] = row
+    latest_rows = list(latest_rows_by_query.values())
 
-    unanswered_rows = (await db.execute(unanswered_stmt)).fetchall()
-    weak_rows = (await db.execute(weak_stmt)).fetchall()
+    resolved_topics: list[str] = []
+    latest_rows_with_topics: list[tuple[object, str, str]] = []
+    for row in latest_rows:
+        query = clean_query_text(row.query or "")
+        normalized_query = normalized_query_key(query)
+        if not normalized_query:
+            continue
+        internal_topic = _canonical_topic_label([query])
+        latest_rows_with_topics.append((row, query, internal_topic))
+
+        is_none = row.coverage == "none"
+        is_partial = row.coverage == "partial" or (
+            row.coverage != "none" and float(row.coverage_score or 0.0) <= max_score
+        )
+        if not is_none and not is_partial and internal_topic:
+            if not any(
+                _are_topics_similar(existing_topic, internal_topic)
+                for existing_topic in resolved_topics
+            ):
+                resolved_topics.append(internal_topic)
+
+    grouped: dict[str, dict] = {}
+    for row, query, internal_topic in latest_rows_with_topics:
+        is_none = row.coverage == "none"
+        is_partial = row.coverage == "partial" or (
+            row.coverage != "none" and float(row.coverage_score or 0.0) <= max_score
+        )
+        if not is_none and not is_partial:
+            continue
+        if any(
+            _are_topics_similar(resolved_topic, internal_topic)
+            for resolved_topic in resolved_topics
+        ):
+            continue
+
+        normalized_query = normalized_query_key(query)
+        entry = grouped.setdefault(
+            normalized_query,
+            {
+                "topic": internal_topic,
+                "display_label": _build_visible_gap_label([query], internal_topic),
+                "coverage_type": "none" if is_none else "partial",
+                "occurrences": 0,
+                "avg_score_total": 0.0,
+                "suggested_action": "create_document" if is_none else "improve_document",
+                "observed_queries": [query],
+            },
+        )
+        entry["occurrences"] += 1
+        entry["avg_score_total"] += float(row.coverage_score or 0.0)
+        if is_none:
+            entry["coverage_type"] = "none"
+            entry["suggested_action"] = "create_document"
 
     raw: list[dict] = []
-    seen: set[str] = set()
+    for entry in grouped.values():
+        raw.append(
+            {
+                "topic": entry["topic"],
+                "display_label": entry["display_label"],
+                "coverage_type": entry["coverage_type"],
+                "occurrences": entry["occurrences"],
+                "avg_score": round(entry["avg_score_total"] / entry["occurrences"], 4),
+                "suggested_action": entry["suggested_action"],
+                "observed_queries": entry["observed_queries"],
+            }
+        )
 
-    for row in unanswered_rows:
-        seen.add(row.query)
-        raw.append({
-            "topic": row.query,
-            "coverage_type": "none",
-            "occurrences": row.count,
-            "avg_score": round(row.avg_score, 4),
-            "suggested_action": "create_document",
-        })
-
-    for row in weak_rows:
-        if row.query in seen:
-            continue
-        seen.add(row.query)
-        raw.append({
-            "topic": row.query,
-            "coverage_type": "partial",
-            "occurrences": row.count,
-            "avg_score": round(row.avg_score, 4),
-            "suggested_action": "improve_document",
-        })
-
-    return raw
+    raw.sort(
+        key=lambda item: (
+            1 if item["coverage_type"] == "none" else 0,
+            item["occurrences"],
+            -item["avg_score"],
+        ),
+        reverse=True,
+    )
+    return raw[:limit]
 
 
 # ─── Sync + main query ────────────────────────────────────────────────────────
@@ -648,7 +902,7 @@ async def get_org_action_suggestions(
         existing = next(
             (
                 gap for gap in existing_gaps
-                if gap.normalized_topic == normalized or _are_topics_similar(gap.topic, raw["topic"])
+                if gap.normalized_topic == normalized or _are_topics_similar(gap.normalized_topic, raw["topic"])
             ),
             None,
         )
@@ -657,8 +911,11 @@ async def get_org_action_suggestions(
         priority = _score_to_priority(score, quality)
 
         if existing is not None:
-            existing.topic = _canonical_topic_label([existing.topic, raw["topic"]])
-            existing.normalized_topic = _normalize_topic(existing.topic)
+            existing.topic = raw.get("display_label") or _build_visible_gap_label(
+                raw.get("observed_queries", [raw["topic"]]),
+                raw["topic"],
+            )
+            existing.normalized_topic = normalized
             existing.occurrences = raw["occurrences"]
             existing.avg_coverage_score = raw["avg_score"]
             existing.coverage_type = raw["coverage_type"]
@@ -669,11 +926,13 @@ async def get_org_action_suggestions(
             existing.last_seen_at = now
             existing.updated_at = now
         else:
-            canonical_topic = _canonical_topic_label([raw["topic"]])
             gap = KnowledgeGap(
                 organization_id=organization_id,
-                topic=canonical_topic,
-                normalized_topic=_normalize_topic(canonical_topic),
+                topic=raw.get("display_label") or _build_visible_gap_label(
+                    raw.get("observed_queries", [raw["topic"]]),
+                    raw["topic"],
+                ),
+                normalized_topic=normalized,
                 status="pending",
                 quality=quality,
                 priority=priority,
@@ -689,6 +948,23 @@ async def get_org_action_suggestions(
             db.add(gap)
             existing_gaps.append(gap)
 
+    for gap in existing_gaps:
+        if gap.status not in ("pending", "conflict", "resolved"):
+            continue
+        still_active = any(
+            gap.normalized_topic == _normalize_topic(raw["topic"])
+            or _are_topics_similar(gap.normalized_topic, raw["topic"])
+            for raw in raw_gaps
+        )
+        if still_active:
+            if gap.status == "resolved":
+                gap.status = "pending"
+                gap.updated_at = now
+            continue
+        if gap.status in ("pending", "conflict"):
+            gap.status = "resolved"
+            gap.updated_at = now
+
     await db.commit()
 
     # ── Active suggestions ────────────────────────────────────────────────────
@@ -703,7 +979,7 @@ async def get_org_action_suggestions(
     active_gaps = (await db.execute(active_stmt)).scalars().all()
 
     suggestions = [
-        _format_gap_metrics(g, has_existing_draft=_has_draft(g.topic))
+        _format_gap_metrics(g, has_existing_draft=_has_draft(g.normalized_topic))
         for g in active_gaps
     ]
 
@@ -723,7 +999,8 @@ async def get_org_action_suggestions(
     for g in promoted_gaps:
         estimated_saved = _estimated_time_lost_minutes(g.occurrences, g.coverage_type)
         recently_applied.append({
-            "topic": g.topic,
+            "topic": g.normalized_topic,
+            "display_label": g.topic,
             "coverage_type": g.coverage_type,
             "chunks_created": g.promoted_chunks or 0,
             "promoted_at": g.updated_at.isoformat(),
@@ -962,7 +1239,8 @@ async def get_knowledge_insights(
         "knowledge_health_score": knowledge_health_score,
         "top_topics": [
             {
-                "topic": g.topic,
+                "topic": g.normalized_topic,
+                "display_label": g.topic,
                 "coverage_type": g.coverage_type,
                 "occurrences": g.occurrences,
                 "priority_score": g.priority_score,

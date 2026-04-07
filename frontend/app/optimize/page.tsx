@@ -140,18 +140,44 @@ export default function OptimizePage() {
   const [error, setError] = useState(false)
 
   useEffect(() => {
-    fetch(`${API_URL}/internal/optimize`, {
-      headers: { 'X-Organization-Id': ORG_ID },
-    })
-      .then(res => (res.ok ? res.json() : Promise.reject()))
-      .then((payload: OptimizePayload) => {
-        setData(payload)
-        setLoading(false)
+    let cancelled = false
+
+    const loadOptimize = (showLoading = false) => {
+      if (showLoading) setLoading(true)
+      fetch(`${API_URL}/internal/optimize`, {
+        headers: { 'X-Organization-Id': ORG_ID },
       })
-      .catch(() => {
-        setError(true)
-        setLoading(false)
-      })
+        .then(res => (res.ok ? res.json() : Promise.reject()))
+        .then((payload: OptimizePayload) => {
+          if (cancelled) return
+          setData(payload)
+          setError(false)
+          setLoading(false)
+        })
+        .catch(() => {
+          if (cancelled) return
+          setError(true)
+          setLoading(false)
+        })
+    }
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        loadOptimize()
+      }
+    }
+
+    const handleFocus = () => loadOptimize()
+
+    loadOptimize(true)
+    window.addEventListener('focus', handleFocus)
+    document.addEventListener('visibilitychange', handleVisibility)
+
+    return () => {
+      cancelled = true
+      window.removeEventListener('focus', handleFocus)
+      document.removeEventListener('visibilitychange', handleVisibility)
+    }
   }, [])
 
   return (

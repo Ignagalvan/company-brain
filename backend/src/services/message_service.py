@@ -13,6 +13,7 @@ from src.models.citation import Citation
 from src.models.conversation import Conversation
 from src.models.message import Message
 from src.models.query_log import QueryLog
+from src.services.query_normalization import clean_query_text
 from src.services import answer_service, evidence_scoring, expansion_service, query_decomposition, retrieval_service
 from src.services.query_classifier_service import classify_query
 
@@ -441,7 +442,7 @@ async def send_message(
     try:
         query_log = QueryLog(
             organization_id=organization_id,
-            query=content,
+            query=clean_query_text(content),
             coverage=coverage,
             coverage_score=coverage_score,
         )
