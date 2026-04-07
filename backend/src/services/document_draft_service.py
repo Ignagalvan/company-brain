@@ -309,7 +309,9 @@ def _match_template(topic: str) -> tuple[str, str]:
     """Return (template_content, draft_type) for the given topic."""
     draft_type = _classify(topic)
     if draft_type == "generic":
-        return _TEMPLATE_GENERIC.format(topic=topic), "generic"
+        # Truncate long topics so they don't repeat verbatim and hurt readability
+        display_topic = topic if len(topic) <= 60 else topic[:57] + "..."
+        return _TEMPLATE_GENERIC.format(topic=display_topic), "generic"
     return _TEMPLATES[draft_type], draft_type
 
 
@@ -330,8 +332,9 @@ def generate_draft_with_metadata(topic: str) -> dict:
     Used by the Action Layer to build structured responses.
     """
     content, draft_type = _match_template(topic)
+    title_topic = topic if len(topic) <= 60 else topic[:57] + "..."
     return {
         "draft_content": content,
         "draft_type": draft_type,
-        "draft_title": f"Borrador: {topic}",
+        "draft_title": f"Borrador: {title_topic}",
     }

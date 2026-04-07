@@ -1,5 +1,6 @@
 'use client'
 
+import Link from 'next/link'
 import { useEffect, useRef, useState } from 'react'
 import { Conversation } from '../types'
 import { ChatMessage } from './ChatMessage'
@@ -86,6 +87,12 @@ export function ChatArea({ conversation, pendingContent, sendError, onSend, onTo
             <span className="text-sm text-slate-400 truncate">{conversation.title}</span>
           </>
         )}
+        <Link
+          href="/documents"
+          className="ml-auto text-sm font-medium text-slate-500 hover:text-slate-800 transition-colors"
+        >
+          Ver documentos
+        </Link>
       </div>
 
       {/* Thread */}

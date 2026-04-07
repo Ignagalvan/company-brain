@@ -57,6 +57,21 @@ def test_uploaded_document_appears_in_list(client, headers):
     assert doc_id in [d["id"] for d in r2.json()]
 
 
+def test_documents_overview_returns_structure(client, headers):
+    _upload(client, headers, "overview.pdf")
+
+    r = client.get("/documents/overview", headers=headers)
+    assert r.status_code == 200
+    data = r.json()
+    assert "documents" in data
+    assert "insights" in data
+    assert isinstance(data["documents"], list)
+    assert "most_used" in data["insights"]
+    assert "never_used" in data["insights"]
+    assert "could_resolve_gaps" in data["insights"]
+    assert "recent_documents" in data["insights"]
+
+
 # ---------------------------------------------------------------------------
 # Get
 # ---------------------------------------------------------------------------
@@ -68,6 +83,19 @@ def test_get_document_by_id(client, headers):
     r2 = client.get(f"/documents/{doc_id}", headers=headers)
     assert r2.status_code == 200
     assert r2.json()["id"] == doc_id
+
+
+def test_get_document_detail_by_id(client, headers):
+    r = _upload(client, headers, "detail.pdf")
+    doc_id = r.json()["id"]
+
+    r2 = client.get(f"/documents/{doc_id}/detail", headers=headers)
+    assert r2.status_code == 200
+    data = r2.json()
+    assert data["id"] == doc_id
+    assert "chunks_count" in data
+    assert "usage_count" in data
+    assert "related_active_gaps_count" in data
 
 
 def test_get_nonexistent_document_returns_404(client, headers):

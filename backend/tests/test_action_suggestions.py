@@ -18,6 +18,7 @@ _EMBED_PATCH = "src.services.document_service.embedding_service.generate_embeddi
 SUGGESTIONS_URL = "/internal/action-suggestions"
 DRAFT_URL = "/internal/action-suggestions/draft"
 PROMOTE_URL = "/internal/action-suggestions/promote"
+INSIGHTS_URL = "/internal/knowledge-insights"
 
 
 def _h(org: str = TEST_ORG) -> dict:
@@ -52,6 +53,8 @@ def test_action_suggestions_response_structure(client):
     resp = client.get(SUGGESTIONS_URL, headers=_h())
     data = resp.json()
     assert "suggestions" in data
+    assert "quick_wins" in data
+    assert "recommendations" in data
     assert "total" in data
     assert isinstance(data["suggestions"], list)
     assert data["total"] == len(data["suggestions"])
@@ -74,6 +77,8 @@ def test_action_suggestions_each_item_has_required_fields(client):
         assert "suggested_action" in item
         assert "has_existing_draft" in item
         assert "ready_for_draft" in item
+        assert "estimated_time_lost_minutes" in item
+        assert "estimated_time_saved_if_resolved_minutes" in item
 
 
 def test_action_suggestions_multitenant_isolation(client):
@@ -146,6 +151,7 @@ def test_action_promote_response_structure(client):
     assert "chunks_created" in data
     assert "organization_id" in data
     assert "promoted_at" in data
+    assert "knowledge_impact" in data
 
 
 def test_action_promote_org_matches_header(client):
@@ -210,3 +216,16 @@ def test_promoted_doc_not_visible_to_other_org(client):
 
     get_resp = client.get(f"/documents/{doc_id}", headers=_h(OTHER_ORG))
     assert get_resp.status_code == 404
+
+
+def test_knowledge_insights_response_structure(client):
+    resp = client.get(INSIGHTS_URL, headers=_h())
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "total_queries_analyzed" in data
+    assert "active_gaps" in data
+    assert "resolved_gaps" in data
+    assert "coverage_rate_7d" in data
+    assert "estimated_time_lost_current_minutes" in data
+    assert "estimated_time_saved_recent_minutes" in data
+    assert "knowledge_health_score" in data

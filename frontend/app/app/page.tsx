@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { AppShell } from './components/AppShell'
 import { Sidebar } from './components/Sidebar'
 import { ChatArea } from './components/ChatArea'
-import { Conversation, Message, UploadedDoc } from './types'
+import { Conversation, Message } from './types'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
 const ORG_ID = process.env.NEXT_PUBLIC_ORG_ID ?? '00000000-0000-0000-0000-000000000001'
@@ -17,7 +17,6 @@ const HEADERS = {
 export default function AppPage() {
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [activeConvId, setActiveConvId] = useState<string | null>(null)
-  const [uploadedDocs, setUploadedDocs] = useState<UploadedDoc[]>([])
   const [pendingContent, setPendingContent] = useState('')
   const [sendError, setSendError] = useState('')
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
@@ -34,19 +33,6 @@ export default function AppPage() {
       .then(r => r.ok ? r.json() : [])
       .then((data: Omit<Conversation, 'messages'>[]) => {
         setConversations(data.map(c => ({ ...c, messages: [] })))
-      })
-      .catch(() => {})
-  }, [])
-
-  // Load documents on mount
-  useEffect(() => {
-    fetch(`${API_URL}/documents`, { headers: HEADERS })
-      .then(r => r.ok ? r.json() : [])
-      .then((data: { id: string; filename: string }[]) => {
-        setUploadedDocs(data.map(d => ({
-          id: d.id,
-          filename: d.filename.replace(/^[0-9a-f-]{36}_/i, ''),
-        })))
       })
       .catch(() => {})
   }, [])
@@ -87,17 +73,6 @@ export default function AppPage() {
     } catch {}
     setConversations(prev => prev.filter(c => c.id !== id))
     if (activeConvId === id) setActiveConvId(null)
-  }
-
-  function handleDocUploaded(doc: UploadedDoc) {
-    setUploadedDocs(prev => [...prev, doc])
-  }
-
-  async function handleDeleteDoc(id: string) {
-    try {
-      await fetch(`${API_URL}/documents/${id}`, { method: 'DELETE', headers: HEADERS })
-    } catch {}
-    setUploadedDocs(prev => prev.filter(d => d.id !== id))
   }
 
   async function handleSend(content: string) {
@@ -180,12 +155,9 @@ export default function AppPage() {
         <Sidebar
           conversations={conversations}
           activeConvId={activeConvId}
-          uploadedDocs={uploadedDocs}
           onNewConversation={handleNewConversation}
           onSelectConversation={handleSelectConversation}
           onDeleteConversation={handleDeleteConversation}
-          onDocUploaded={handleDocUploaded}
-          onDeleteDoc={handleDeleteDoc}
           mobileOpen={mobileSidebarOpen}
           onMobileClose={() => setMobileSidebarOpen(false)}
         />

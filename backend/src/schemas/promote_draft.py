@@ -18,3 +18,4 @@ class PromoteDraftResponse(BaseModel):
     promoted_at: datetime
     source_topic: str
     source_query: str | None
+    knowledge_impact: dict | None = None

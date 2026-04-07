@@ -52,6 +52,16 @@ function IconFile() {
   )
 }
 
+function IconAnalytics() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="18" y1="20" x2="18" y2="10" />
+      <line x1="12" y1="20" x2="12" y2="4" />
+      <line x1="6" y1="20" x2="6" y2="14" />
+    </svg>
+  )
+}
+
 function IconSettings() {
   return (
     <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -66,10 +76,11 @@ function IconSettings() {
 const NAV_ITEMS = [
   { href: '/app', label: 'Chat', icon: IconChat, exact: true },
   { href: '/dashboard/improvement', label: 'Knowledge Gaps', icon: IconGaps, exact: false },
+  { href: '/documents', label: 'Documents', icon: IconFile, exact: false },
+  { href: '/optimize', label: 'Optimize', icon: IconAnalytics, exact: false },
 ] as const
 
 const COMING_SOON = [
-  { label: 'Documentos', icon: IconFile },
   { label: 'Configuración', icon: IconSettings },
 ]
 
@@ -93,7 +104,7 @@ function NavList({
             href={item.href}
             onClick={onNavigate}
             className={[
-              'flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
+              'flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-[15px] font-medium transition-colors',
               active
                 ? 'bg-slate-100 text-slate-900'
                 : 'text-slate-500 hover:bg-slate-50 hover:text-slate-800',
