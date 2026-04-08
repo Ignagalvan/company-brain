@@ -6,8 +6,10 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.models.citation import Citation
 from src.models.document import Document
 from src.models.knowledge_gap import KnowledgeGap
+from src.models.message import Message
 from src.models.query_log import QueryLog
 from src.services.query_normalization import clean_query_text, normalized_query_key
 from src.services.query_quality import INVALID, LOW_QUALITY, classify_query_quality
@@ -428,6 +430,18 @@ def _merge_raw_gap_entry(existing: dict, incoming: dict) -> dict:
         existing["quality_topic"] = incoming_quality_topic
     existing.setdefault("observed_queries", [])
     existing["observed_queries"].extend(incoming.get("observed_queries", []))
+    existing.setdefault("evidence_snippets", [])
+    existing.setdefault("evidence_documents", [])
+    existing.setdefault("evidence_document_ids", [])
+    for snippet in incoming.get("evidence_snippets", []):
+        if snippet not in existing["evidence_snippets"] and len(existing["evidence_snippets"]) < 2:
+            existing["evidence_snippets"].append(snippet)
+    for document in incoming.get("evidence_documents", []):
+        if document not in existing["evidence_documents"] and len(existing["evidence_documents"]) < 2:
+            existing["evidence_documents"].append(document)
+    for document_id in incoming.get("evidence_document_ids", []):
+        if document_id not in existing["evidence_document_ids"] and len(existing["evidence_document_ids"]) < 2:
+            existing["evidence_document_ids"].append(document_id)
     existing["topic"] = _canonical_topic_label(existing["observed_queries"] or [existing["topic"], incoming["topic"]])
     existing["display_label"] = _build_visible_gap_label(existing["observed_queries"], existing["topic"])
     return existing
@@ -488,10 +502,104 @@ def _estimated_time_lost_minutes(occurrences: int, coverage_type: str) -> int:
     return occurrences * _minutes_lost_per_occurrence(coverage_type)
 
 
+def _truncate_snippet(text: str, max_chars: int = 200) -> str:
+    compact = " ".join((text or "").split()).strip()
+    if len(compact) <= max_chars:
+        return compact
+    return f"{compact[:max_chars].rstrip()}..."
+
+
+async def _get_partial_evidence_by_query(
+    db: AsyncSession,
+    organization_id: uuid.UUID,
+    queries: list[str],
+) -> dict[str, dict[str, list[str]]]:
+    evidence: dict[str, dict[str, list[str]]] = {}
+    cleaned_queries = [clean_query_text(query) for query in queries if clean_query_text(query)]
+    seen_queries: set[str] = set()
+    user_rows = (
+        await db.execute(
+            select(Message.id, Message.content, Message.conversation_id, Message.created_at)
+            .where(
+                Message.organization_id == organization_id,
+                Message.role == "user",
+            )
+            .order_by(Message.created_at.desc())
+            .limit(250)
+        )
+    ).all()
+
+    for query in cleaned_queries:
+        normalized_query = normalized_query_key(query)
+        if not normalized_query or normalized_query in seen_queries:
+            continue
+        seen_queries.add(normalized_query)
+
+        snippets: list[str] = []
+        documents: list[str] = []
+        document_ids: list[str] = []
+        matching_user_rows = [
+            (message_id, conversation_id, created_at)
+            for message_id, content, conversation_id, created_at in user_rows
+            if normalized_query_key(content or "") == normalized_query
+        ][:5]
+
+        for user_id, conversation_id, user_created_at in matching_user_rows:
+            assistant_stmt = (
+                select(Message.id)
+                .where(
+                    Message.organization_id == organization_id,
+                    Message.conversation_id == conversation_id,
+                    Message.role == "assistant",
+                    Message.coverage == "partial",
+                    Message.created_at >= user_created_at,
+                )
+                .order_by(Message.created_at.asc())
+                .limit(1)
+            )
+            assistant_id = (await db.execute(assistant_stmt)).scalar_one_or_none()
+            if assistant_id is None:
+                continue
+
+            citation_stmt = (
+                select(Citation.content, Document.id, Document.filename)
+                .join(Document, Document.id == Citation.document_id)
+                .where(
+                    Citation.organization_id == organization_id,
+                    Citation.message_id == assistant_id,
+                )
+                .order_by(Citation.created_at.asc())
+                .limit(2)
+            )
+            citation_rows = (await db.execute(citation_stmt)).all()
+            for content, document_id, filename in citation_rows:
+                snippet = _truncate_snippet(content or "")
+                source = filename or "Documento"
+                if snippet and snippet not in snippets:
+                    snippets.append(snippet)
+                    documents.append(source)
+                    document_ids.append(str(document_id))
+                if len(snippets) >= 2:
+                    break
+            if len(snippets) >= 2:
+                break
+
+        evidence[normalized_query] = {
+            "evidence_snippets": snippets[:2],
+            "evidence_documents": documents[:2],
+            "evidence_document_ids": document_ids[:2],
+        }
+
+    return evidence
+
+
 def _format_gap_metrics(
     gap: KnowledgeGap,
     *,
     has_existing_draft: bool = False,
+    evidence_snippets: list[str] | None = None,
+    evidence_documents: list[str] | None = None,
+    evidence_document_ids: list[str] | None = None,
 ) -> dict:
     estimated_time_lost_minutes = _estimated_time_lost_minutes(gap.occurrences, gap.coverage_type)
     return {
@@ -509,6 +617,9 @@ def _format_gap_metrics(
         "ready_for_draft": gap.quality != LOW_QUALITY,
         "draft_content": gap.draft_content,
         "last_seen_at": gap.last_seen_at.isoformat(),
+        "evidence_snippets": evidence_snippets or [],
+        "evidence_documents": evidence_documents or [],
+        "evidence_document_ids": evidence_document_ids or [],
         "minutes_lost_per_occurrence": _minutes_lost_per_occurrence(gap.coverage_type),
         "estimated_time_lost_minutes": estimated_time_lost_minutes,
         "estimated_time_saved_if_resolved_minutes": estimated_time_lost_minutes,
@@ -754,6 +865,11 @@ async def _get_raw_from_logs(
             continue
         latest_rows_by_query[normalized_query] = row
     latest_rows = list(latest_rows_by_query.values())
+    partial_evidence_by_query = await _get_partial_evidence_by_query(
+        db,
+        organization_id,
+        [clean_query_text(row.query or "") for row in latest_rows if row.coverage == "partial"],
+    )
 
     resolved_topics: list[str] = []
     latest_rows_with_topics: list[tuple[object, str, str]] = []
@@ -801,6 +917,9 @@ async def _get_raw_from_logs(
                 "avg_score_total": 0.0,
                 "suggested_action": "create_document" if is_none else "improve_document",
                 "observed_queries": [query],
+                "evidence_snippets": partial_evidence_by_query.get(normalized_query, {}).get("evidence_snippets", []),
+                "evidence_documents": partial_evidence_by_query.get(normalized_query, {}).get("evidence_documents", []),
+                "evidence_document_ids": partial_evidence_by_query.get(normalized_query, {}).get("evidence_document_ids", []),
             },
         )
         entry["occurrences"] += 1
@@ -820,6 +939,9 @@ async def _get_raw_from_logs(
                 "avg_score": round(entry["avg_score_total"] / entry["occurrences"], 4),
                 "suggested_action": entry["suggested_action"],
                 "observed_queries": entry["observed_queries"],
+                "evidence_snippets": entry.get("evidence_snippets", []),
+                "evidence_documents": entry.get("evidence_documents", []),
+                "evidence_document_ids": entry.get("evidence_document_ids", []),
             }
         )
 
@@ -872,6 +994,14 @@ async def get_org_action_suggestions(
         else:
             consolidated.append(dict(raw))
     raw_gaps = consolidated
+    raw_gap_evidence: dict[str, dict[str, list[str]]] = {
+        raw["topic"]: {
+            "evidence_snippets": raw.get("evidence_snippets", []),
+            "evidence_documents": raw.get("evidence_documents", []),
+            "evidence_document_ids": raw.get("evidence_document_ids", []),
+        }
+        for raw in raw_gaps
+    }
 
     draft_stmt = select(Document.filename).where(
         Document.organization_id == organization_id,
@@ -979,7 +1109,34 @@ async def get_org_action_suggestions(
     active_gaps = (await db.execute(active_stmt)).scalars().all()
 
     suggestions = [
-        _format_gap_metrics(g, has_existing_draft=_has_draft(g.normalized_topic))
+        _format_gap_metrics(
+            g,
+            has_existing_draft=_has_draft(g.normalized_topic),
+            evidence_snippets=next(
+                (
+                    payload.get("evidence_snippets", [])
+                    for topic, payload in raw_gap_evidence.items()
+                    if g.normalized_topic == _normalize_topic(topic) or _are_topics_similar(g.normalized_topic, topic)
+                ),
+                [],
+            ),
+            evidence_documents=next(
+                (
+                    payload.get("evidence_documents", [])
+                    for topic, payload in raw_gap_evidence.items()
+                    if g.normalized_topic == _normalize_topic(topic) or _are_topics_similar(g.normalized_topic, topic)
+                ),
+                [],
+            ),
+            evidence_document_ids=next(
+                (
+                    payload.get("evidence_document_ids", [])
+                    for topic, payload in raw_gap_evidence.items()
+                    if g.normalized_topic == _normalize_topic(topic) or _are_topics_similar(g.normalized_topic, topic)
+                ),
+                [],
+            ),
+        )
         for g in active_gaps
     ]
 

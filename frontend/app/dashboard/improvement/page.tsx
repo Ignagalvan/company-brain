@@ -28,6 +28,9 @@ type Suggestion = {
   ready_for_draft: boolean
   draft_content: string | null
   last_seen_at: string
+  evidence_snippets?: string[]
+  evidence_documents?: string[]
+  evidence_document_ids?: string[]
   minutes_lost_per_occurrence: number
   estimated_time_lost_minutes: number
   estimated_time_saved_if_resolved_minutes: number
@@ -110,8 +113,14 @@ type AppliedItem = {
   estimated_time_saved_if_resolved_minutes: number
 }
 
+type EvidenceSnippet = {
+  text: string
+  source: string
+}
+
 type ItemStatus =
   | { tag: 'idle' }
+  | { tag: 'reviewing' }
   | { tag: 'ignoring' }
   | { tag: 'ignored' }
   | { tag: 'generating' }
@@ -170,6 +179,69 @@ function formatCoveragePct(rate: number): string {
 
 function consultasLabel(count: number): string {
   return count === 1 ? 'consulta' : 'consultas'
+}
+
+function isImproveFlow(suggestion: Suggestion): boolean {
+  return suggestion.suggested_action === 'improve_document' || suggestion.coverage_type === 'partial'
+}
+
+function primaryDraftLabel(suggestion: Suggestion, compact = false): string {
+  if (isImproveFlow(suggestion)) return compact ? 'Completar' : 'Completar respuesta'
+  return compact ? 'Propuesta' : 'Crear contenido'
+}
+
+function truncateEvidence(value: string, max = 200): string {
+  const compact = value.replace(/\s+/g, ' ').trim()
+  if (compact.length <= max) return compact
+  return `${compact.slice(0, max).trimEnd()}...`
+}
+
+function backendEvidenceSnippets(suggestion: Suggestion): EvidenceSnippet[] {
+  const snippets = suggestion.evidence_snippets ?? []
+  const documents = suggestion.evidence_documents ?? []
+  return snippets.slice(0, 2).map((text, index) => ({
+    text: truncateEvidence(text),
+    source: documents[index] ?? documents[0] ?? 'Documento',
+  }))
+}
+
+function ensureSentence(value: string): string {
+  const trimmed = value.replace(/\s+/g, ' ').trim()
+  if (!trimmed) return ''
+  return /[.!?…]$/.test(trimmed) ? trimmed : `${trimmed}.`
+}
+
+function suggestedResponseCopy(suggestion: Suggestion, evidenceSnippets: EvidenceSnippet[]): string {
+  if (evidenceSnippets.length > 0) {
+    return ensureSentence(evidenceSnippets[0].text)
+  }
+
+  const label = (suggestion.display_label ?? suggestion.topic).replace(/^¿/, '').replace(/\?$/, '').trim()
+  return `Hay información relacionada sobre ${label.toLowerCase()}, pero no alcanza para responder completamente la pregunta.`
+}
+
+function sanitizeDraftContent(value: string): string {
+  return value
+    .split(/\r?\n/)
+    .filter(line => {
+      const normalized = line.trim().toLowerCase()
+      if (!normalized) return true
+      return ![
+        'documentación sobre',
+        'documentacion sobre',
+        'descripción general',
+        'descripcion general',
+        'notas importantes',
+      ].some(prefix => normalized.startsWith(prefix))
+    })
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+function documentHrefFromSuggestion(suggestion: Suggestion): string {
+  const documentId = suggestion.evidence_document_ids?.[0]
+  return documentId ? `/documents/${documentId}` : '/documents'
 }
 
 function healthTone(score: number): { label: string; valueClass: string; subClass: string } {
@@ -483,9 +555,9 @@ function DraftEditor({
   disabled?: boolean
 }) {
   return (
-    <div className="mt-4 border border-slate-200 rounded-lg overflow-hidden">
-      <div className="bg-slate-50 border-b border-slate-200 px-4 py-2 flex items-center justify-between">
-        <span className="text-[11px] font-medium text-slate-500 uppercase tracking-wide">Borrador</span>
+    <div className="mt-4 border border-slate-200 rounded-xl overflow-hidden bg-white shadow-sm">
+      <div className="bg-slate-50 border-b border-slate-200 px-5 py-3 flex items-center justify-between">
+        <span className="text-[11px] font-medium text-slate-500 uppercase tracking-wide">Contenido que se agregaría al conocimiento</span>
         <span className="text-[11px] text-slate-400 tabular-nums">{content.length} chars</span>
       </div>
       <textarea
@@ -493,13 +565,368 @@ function DraftEditor({
         onChange={e => onChange(e.target.value)}
         disabled={disabled}
         spellCheck={false}
-        className="w-full p-4 text-[13px] text-slate-700 leading-relaxed font-mono resize-y bg-white focus:outline-none min-h-[120px] max-h-64 disabled:opacity-60 disabled:cursor-not-allowed"
+        className="w-full px-5 py-4 text-[14px] text-slate-700 leading-7 resize-y bg-white focus:outline-none min-h-[240px] max-h-[560px] disabled:opacity-60 disabled:cursor-not-allowed"
       />
     </div>
   )
 }
 
+function ResolutionPlan({
+  suggestion,
+  state,
+  content,
+  onChange,
+}: {
+  suggestion: Suggestion
+  state: ItemStatus
+  content: string
+  onChange: (v: string) => void
+}) {
+  const disabled = state.tag === 'promoting' || state.tag === 'promoted'
+  const impact =
+    state.tag === 'promoted'
+      ? state.result.knowledge_impact?.estimated_time_saved_if_resolved_minutes ?? suggestion.estimated_time_saved_if_resolved_minutes
+      : suggestion.estimated_time_saved_if_resolved_minutes
+  const affectedOccurrences =
+    state.tag === 'promoted'
+      ? state.result.knowledge_impact?.affected_occurrences ?? suggestion.occurrences
+      : suggestion.occurrences
+
+  return (
+    <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50/70 overflow-hidden">
+      <div className="border-b border-slate-200 bg-white px-4 py-3">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Resolucion guiada</p>
+        <h3 className="mt-1 text-[15px] font-semibold text-slate-900">Entendé qué falta, qué propone el sistema y qué va a pasar si lo aceptás</h3>
+      </div>
+      <div className="grid gap-3 p-4 md:grid-cols-3">
+        <div className="rounded-lg border border-slate-200 bg-white px-4 py-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Que falta hoy</p>
+          <p className="mt-2 text-[13px] leading-relaxed text-slate-700">
+            Este tema sigue dejando preguntas sin buena cobertura en el chat.
+          </p>
+          <div className="mt-3 space-y-1.5 text-[12px] text-slate-600">
+            <p>{affectedOccurrences} {consultasLabel(affectedOccurrences)} afectadas</p>
+            <p>{suggestion.coverage_type === 'none' ? 'Hoy no hay respuesta confiable.' : 'Hoy la respuesta sigue siendo parcial.'}</p>
+            <p>{formatMinutes(impact)} recuperables si queda cubierto</p>
+          </div>
+        </div>
+        <div className="rounded-lg border border-slate-200 bg-white px-4 py-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Que propone el sistema</p>
+          <p className="mt-2 text-[13px] leading-relaxed text-slate-700">
+            Esta propuesta agrega el conocimiento faltante. Podés editarla antes de guardarla.
+          </p>
+          <DraftEditor content={content} onChange={onChange} disabled={disabled} />
+        </div>
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50/70 px-4 py-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700">Que pasa si la aceptas</p>
+          <div className="mt-2 space-y-2 text-[13px] leading-relaxed text-emerald-900">
+            <p>El texto se guarda como conocimiento interno y se indexa para futuras respuestas.</p>
+            <p>No es la respuesta final del chat: es la base que el sistema usará para responder con evidencia.</p>
+            <p>Debería cubrir preguntas como <span className="font-medium">{suggestion.display_label ?? suggestion.topic}</span> y variantes similares.</p>
+          </div>
+          <div className="mt-3 rounded-lg border border-emerald-200 bg-white/80 px-3 py-2 text-[12px] text-emerald-800">
+            Impacto esperado: {affectedOccurrences} {consultasLabel(affectedOccurrences)} y {formatMinutes(impact)} recuperables.
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function GapResolutionPanelLegacy({
+  suggestion,
+  state,
+  evidenceSnippets,
+}: {
+  suggestion: Suggestion
+  state: ItemStatus
+  evidenceSnippets: EvidenceSnippet[]
+}) {
+  const improveFlow = isImproveFlow(suggestion)
+  const impact =
+    state.tag === 'promoted'
+      ? state.result.knowledge_impact?.estimated_time_saved_if_resolved_minutes ?? suggestion.estimated_time_saved_if_resolved_minutes
+      : suggestion.estimated_time_saved_if_resolved_minutes
+  const affectedOccurrences =
+    state.tag === 'promoted'
+      ? state.result.knowledge_impact?.affected_occurrences ?? suggestion.occurrences
+      : suggestion.occurrences
+
+  const label = suggestion.display_label ?? suggestion.topic
+  const plainLabel = label.replace(/^¿/, '').replace(/\?$/, '').trim()
+  const lowerLabel = plainLabel.toLowerCase()
+  let coveredQuestions = [
+    `¿${plainLabel}?`,
+    `¿Hay información sobre ${plainLabel.toLowerCase()}?`,
+    `¿Cómo responde la empresa sobre ${plainLabel.toLowerCase()}?`,
+  ]
+
+  if (lowerLabel.includes('empresa')) {
+    coveredQuestions = [
+      '¿Cómo se llama la empresa?',
+      '¿Cuál es el nombre de la empresa?',
+      '¿Qué empresa brinda este servicio?',
+    ]
+  } else if (lowerLabel.includes('bono')) {
+    coveredQuestions = [
+      '¿Hay bono anual?',
+      '¿La empresa ofrece bono?',
+      '¿Existe bono de fin de año?',
+    ]
+  } else if (lowerLabel.includes('vacaciones')) {
+    coveredQuestions = [
+      '¿Cuántos días de vacaciones hay?',
+      '¿Cuántos días de vacaciones tienen los empleados?',
+      '¿Cuántos días me corresponden de vacaciones?',
+    ]
+  }
+
+  return (
+    <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50/70 overflow-hidden">
+      <div className="border-b border-slate-200 bg-white px-5 py-4">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Resolución guiada</p>
+        <h3 className="mt-1 text-[16px] font-semibold text-slate-900">Entendé el problema, revisá la propuesta y decidí si querés agregar este conocimiento</h3>
+        <div className="mt-2 inline-flex rounded-full border px-2.5 py-1 text-[11px] font-medium leading-none">
+          {improveFlow ? (
+            <span className="border-amber-200 bg-amber-50 text-amber-700 rounded-full px-2.5 py-1 -m-1">Hay evidencia parcial: conviene mejorar contenido existente</span>
+          ) : (
+            <span className="border-red-200 bg-red-50 text-red-700 rounded-full px-2.5 py-1 -m-1">No hay evidencia relevante: conviene crear contenido nuevo</span>
+          )}
+        </div>
+      </div>
+      <div className="grid gap-3 p-4 md:grid-cols-2">
+        <div className="rounded-lg border border-slate-200 bg-white px-4 py-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Qué falta hoy</p>
+          <p className="mt-2 text-[13px] leading-relaxed text-slate-700">
+            {improveFlow
+              ? 'Hay información relacionada, pero hoy no alcanza para responder con confianza.'
+              : 'Este tema sigue dejando preguntas sin buena cobertura en el chat.'}
+          </p>
+          <div className="mt-3 space-y-1.5 text-[12px] text-slate-600">
+            <p>{affectedOccurrences} {consultasLabel(affectedOccurrences)} afectadas</p>
+            <p>{suggestion.coverage_type === 'none' ? 'Hoy no hay respuesta confiable.' : 'Hoy la respuesta sigue siendo parcial.'}</p>
+            <p>{formatMinutes(impact)} recuperables si queda cubierto</p>
+          </div>
+        </div>
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50/70 px-4 py-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700">Qué pasa si aceptás</p>
+          <div className="mt-2 space-y-2 text-[13px] leading-relaxed text-emerald-900">
+            <p>{improveFlow ? 'La mejora se agrega al conocimiento para reforzar lo que ya existe.' : 'El texto se guarda como conocimiento interno y se indexa para futuras respuestas.'}</p>
+            <p>{improveFlow ? 'No crea una respuesta final por sí sola: mejora la base que el sistema usará para responder con evidencia.' : 'No es la respuesta final del chat: es la base que el sistema usará para responder con evidencia.'}</p>
+            <p>Esto permitiría responder preguntas como:</p>
+            <ul className="space-y-1 pl-4 list-disc text-[12px] text-emerald-900">
+              {coveredQuestions.slice(0, 3).map(question => (
+                <li key={question}>{question}</li>
+              ))}
+            </ul>
+          </div>
+          <div className="mt-3 rounded-lg border border-emerald-200 bg-white/80 px-3 py-2 text-[12px] text-emerald-800">
+            Impacto esperado: {affectedOccurrences} {consultasLabel(affectedOccurrences)} y {formatMinutes(impact)} recuperables.
+          </div>
+        </div>
+      </div>
+      {improveFlow && (
+        <div className="px-4 pb-4">
+          <div className="rounded-lg border border-slate-200 bg-slate-100/80 px-4 py-4">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Ya hay información relacionada</p>
+            {evidenceSnippets.length > 0 ? (
+              <div className="mt-3 space-y-3">
+                {evidenceSnippets.slice(0, 2).map((snippet, index) => (
+                  <div key={`${snippet.source}-${index}`} className="rounded-lg border border-slate-200 bg-white px-4 py-3">
+                    <p className="text-[14px] leading-7 text-slate-700">&ldquo;{snippet.text}&rdquo;</p>
+                    <p className="mt-3 text-[12px] font-medium text-slate-500">Fuente: {snippet.source}</p>
+                  </div>
+                ))}
+                <p className="text-[13px] leading-relaxed text-slate-500">
+                  Esta información no alcanza para responder completamente la pregunta. Podés mejorarla para que el sistema responda correctamente.
+                </p>
+              </div>
+            ) : (
+              <div className="mt-3 rounded-lg border border-slate-200 bg-white px-4 py-3">
+                <p className="text-[14px] leading-7 text-slate-700">
+                  Se encontró contenido relacionado en tus documentos, pero no alcanza para responder completamente la pregunta.
+                </p>
+                <p className="mt-3 text-[13px] leading-relaxed text-slate-500">
+                  Esta información está incompleta para responder la pregunta. Podés mejorarla para que el sistema responda correctamente.
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+      <div className="px-4 pb-4">
+        <div className="rounded-lg border border-slate-200 bg-white px-4 py-4">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Qué propone el sistema</p>
+          <h4 className="mt-1 text-[15px] font-semibold text-slate-900">
+            {improveFlow ? 'Respuesta sugerida' : 'No hay información disponible'}
+          </h4>
+          {improveFlow ? (
+            <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-5 py-5">
+              <p className="text-[16px] leading-8 text-slate-800">
+                {suggestedResponseCopy(suggestion, evidenceSnippets)}
+              </p>
+              <p className="mt-3 text-[13px] leading-relaxed text-slate-500">
+                Esta respuesta muestra lo que ya se puede sostener con evidencia, pero todavía necesita contexto o precisión para quedar completa.
+              </p>
+            </div>
+          ) : (
+            <div className="mt-3 rounded-xl border border-dashed border-slate-300 bg-slate-50 px-5 py-5">
+              <p className="text-[15px] leading-7 text-slate-800">
+                No hay información en los documentos para responder esta pregunta.
+              </p>
+              <p className="mt-3 text-[13px] leading-relaxed text-slate-600">
+                Se recomienda agregar un documento o contenido que cubra este tema.
+              </p>
+              <div className="mt-4">
+                <p className="text-[12px] font-semibold uppercase tracking-wide text-slate-400">Ejemplos de qué debería incluir</p>
+                <ul className="mt-2 list-disc space-y-1 pl-5 text-[13px] text-slate-600">
+                  <li>definición</li>
+                  <li>condiciones</li>
+                  <li>reglas</li>
+                  <li>responsables</li>
+                </ul>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── FadingWrapper ────────────────────────────────────────────────────────────
+
+function buildMissingBullets(suggestion: Suggestion, evidenceSnippets: EvidenceSnippet[]): string[] {
+  const label = (suggestion.display_label ?? suggestion.topic).toLowerCase()
+  const snippetText = evidenceSnippets.map(item => item.text.toLowerCase()).join(' ')
+  const bullets: string[] = []
+
+  if (label.includes('cuanto') || label.includes('cuánt') || label.includes('dias') || label.includes('días')) {
+    bullets.push('No se especifica la cantidad o frecuencia.')
+  }
+  if (label.includes('condiciones') || snippetText.includes('permitid') || snippetText.includes('aprob')) {
+    bullets.push('Falta detalle sobre condiciones, límites o excepciones.')
+  }
+  if (label.includes('como') || label.includes('cómo') || label.includes('cual') || label.includes('cuál')) {
+    bullets.push('Falta una respuesta directa y completa para la pregunta.')
+  }
+  if (bullets.length === 0) {
+    bullets.push('Falta contexto para responder la pregunta completa.')
+  }
+  if (bullets.length === 1) {
+    bullets.push('Se necesita una versión más clara para que el sistema responda con confianza.')
+  }
+
+  return bullets.slice(0, 2)
+}
+
+function GapResolutionPanel({
+  suggestion,
+  state,
+  evidenceSnippets,
+}: {
+  suggestion: Suggestion
+  state: ItemStatus
+  evidenceSnippets: EvidenceSnippet[]
+}) {
+  const improveFlow = isImproveFlow(suggestion)
+  const impact =
+    state.tag === 'promoted'
+      ? state.result.knowledge_impact?.estimated_time_saved_if_resolved_minutes ?? suggestion.estimated_time_saved_if_resolved_minutes
+      : suggestion.estimated_time_saved_if_resolved_minutes
+  const affectedOccurrences =
+    state.tag === 'promoted'
+      ? state.result.knowledge_impact?.affected_occurrences ?? suggestion.occurrences
+      : suggestion.occurrences
+  const label = suggestion.display_label ?? suggestion.topic
+  const plainLabel = label.replace(/^¿/, '').replace(/\?$/, '').trim()
+  const lowerLabel = plainLabel.toLowerCase()
+  const missingBullets = buildMissingBullets(suggestion, evidenceSnippets)
+  const ctaHref = improveFlow ? documentHrefFromSuggestion(suggestion) : '/documents'
+  const ctaLabel = improveFlow ? 'Ir al documento' : 'Ir a documentos'
+
+  return (
+    <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50/70 overflow-hidden">
+      <div className="border-b border-slate-200 bg-white px-5 py-4">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Resolución guiada</p>
+        <h3 className="mt-1 text-[16px] font-semibold text-slate-900">Entendé qué encontró el sistema, qué falta y qué acción tomar</h3>
+      </div>
+
+      {improveFlow ? (
+        <>
+          <div className="grid gap-3 p-4 md:grid-cols-2">
+            <div className="rounded-lg border border-slate-200 bg-white px-4 py-4">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Qué encontró el sistema</p>
+              {evidenceSnippets.length > 0 ? (
+                <div className="mt-3 space-y-3">
+                  {evidenceSnippets.slice(0, 2).map((snippet, index) => (
+                    <div key={`${snippet.source}-${index}`} className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
+                      <p className="text-[14px] leading-7 text-slate-700">&ldquo;{snippet.text}&rdquo;</p>
+                      <p className="mt-2 text-[12px] font-medium text-slate-500">Fuente: {snippet.source}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-3 text-[14px] leading-7 text-slate-700">
+                  Se encontró contenido relacionado en tus documentos, pero no alcanza para responder completamente la pregunta.
+                </p>
+              )}
+            </div>
+
+            <div className="rounded-lg border border-slate-200 bg-white px-4 py-4">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Qué falta</p>
+              <ul className="mt-3 list-disc space-y-2 pl-5 text-[14px] leading-6 text-slate-700">
+                {missingBullets.map(bullet => (
+                  <li key={bullet}>{bullet}</li>
+                ))}
+              </ul>
+              <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[12px] text-slate-600">
+                {affectedOccurrences} {consultasLabel(affectedOccurrences)} afectadas y {formatMinutes(impact)} recuperables si queda cubierto.
+              </div>
+            </div>
+          </div>
+
+          <div className="px-4 pb-4">
+            <div className="rounded-lg border border-slate-200 bg-white px-4 py-4">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Acción recomendada</p>
+              <p className="mt-2 text-[14px] leading-7 text-slate-700">
+                Podés revisar el documento existente para completar este tema y mejorar la respuesta del sistema.
+              </p>
+              <div className="mt-4">
+                <a
+                  href={ctaHref}
+                  className="inline-flex text-[13px] px-3 py-1.5 rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-50 hover:border-slate-300 font-medium transition-colors"
+                >
+                  {ctaLabel}
+                </a>
+              </div>
+            </div>
+          </div>
+        </>
+      ) : (
+        <div className="px-4 py-4">
+          <div className="rounded-lg border border-slate-200 bg-white px-4 py-4">
+            <p className="text-[15px] font-semibold text-slate-900">No hay información disponible</p>
+            <p className="mt-2 text-[14px] leading-7 text-slate-700">
+              No hay información en los documentos para responder esta pregunta.
+            </p>
+            <p className="mt-3 text-[13px] leading-relaxed text-slate-600">
+              Se recomienda agregar un PDF sobre este tema.
+            </p>
+            <div className="mt-4">
+              <a
+                href={ctaHref}
+                className="inline-flex text-[13px] px-3 py-1.5 rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-50 hover:border-slate-300 font-medium transition-colors"
+              >
+                {ctaLabel}
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
 
 function FadingWrapper({ children, fading }: { children: React.ReactNode; fading: boolean }) {
   return (
@@ -522,6 +949,7 @@ function HighPriorityCard({
   suggestion,
   state,
   editedContent,
+  evidenceSnippets,
   focused = false,
   onGenerateDraft,
   onPromote,
@@ -623,11 +1051,11 @@ function HighPriorityCard({
         )}
 
         {/* Draft editor */}
-        {(state.tag === 'draft_ready' || state.tag === 'promoting') && (
-          <DraftEditor
-            content={editedContent}
-            onChange={onEditContent}
-            disabled={state.tag === 'promoting'}
+        {state.tag === 'reviewing' && (
+          <GapResolutionPanel
+            suggestion={s}
+            state={state}
+            evidenceSnippets={evidenceSnippets}
           />
         )}
 
@@ -637,7 +1065,7 @@ function HighPriorityCard({
             <div className="flex items-center gap-3">
               <span className="text-emerald-500 shrink-0">✓</span>
               <p className="text-[13px] text-emerald-700">
-                {state.result.chunks_created} fragmentos indexados · disponible para retrieval
+                {state.result.chunks_created} fragmentos indexados. El conocimiento ya quedo disponible para futuras respuestas.
               </p>
             </div>
             {state.result.knowledge_impact && (
@@ -652,15 +1080,19 @@ function HighPriorityCard({
         )}
 
         {/* Actions */}
-        <div className="mt-4 flex items-center justify-end gap-2">
-          <ItemActions
-            state={state}
-            onIgnore={onIgnore}
-            onUndo={onUndo}
-            onGenerateDraft={onGenerateDraft}
-            onPromote={onPromote}
-          />
-        </div>
+        {state.tag !== 'reviewing' && (
+          <div className="mt-4 flex items-center justify-end gap-2">
+            <ItemActions
+              suggestion={s}
+              state={state}
+              onIgnore={onIgnore}
+              onUndo={onUndo}
+              onClose={() => setItemState(s.topic, { tag: 'idle' })}
+              onGenerateDraft={onGenerateDraft}
+              onPromote={onPromote}
+            />
+          </div>
+        )}
       </div>
     </div>
   )
@@ -672,6 +1104,7 @@ function MediumRow({
   suggestion,
   state,
   editedContent,
+  evidenceSnippets,
   focused = false,
   onGenerateDraft,
   onPromote,
@@ -714,7 +1147,7 @@ function MediumRow({
     )
   }
 
-  const expanded = state.tag === 'draft_ready' || state.tag === 'promoting' || state.tag === 'promoted' || state.tag === 'conflict' || state.tag === 'validation_error' || state.tag === 'error'
+  const expanded = state.tag === 'reviewing' || state.tag === 'promoted' || state.tag === 'conflict' || state.tag === 'validation_error' || state.tag === 'error'
 
   return (
     <div
@@ -753,11 +1186,13 @@ function MediumRow({
           {state.tag === 'promoted' && (
             <span className="text-[12px] font-medium text-emerald-600">✓</span>
           )}
-          {state.tag !== 'promoted' && (
+          {state.tag !== 'promoted' && state.tag !== 'reviewing' && (
             <ItemActions
+              suggestion={s}
               state={state}
               onIgnore={onIgnore}
               onUndo={onUndo}
+              onClose={() => setItemState(s.topic, { tag: 'idle' })}
               onGenerateDraft={onGenerateDraft}
               onPromote={onPromote}
               compact
@@ -780,35 +1215,12 @@ function MediumRow({
           {state.tag === 'error' && (
             <p className="text-[13px] text-red-500">{state.message}</p>
           )}
-          {(state.tag === 'draft_ready' || state.tag === 'promoting') && (
-            <>
-              <DraftEditor
-                content={editedContent}
-                onChange={onEditContent}
-                disabled={state.tag === 'promoting'}
-              />
-              <div className="mt-3 flex items-center justify-end gap-2">
-                <button
-                  onClick={onIgnore}
-                  className="text-[13px] px-2.5 py-1.5 text-slate-400 hover:text-slate-600 transition-colors"
-                >
-                  Cancelar
-                </button>
-                <button
-                  onClick={onGenerateDraft}
-                  className="text-[13px] px-2.5 py-1.5 text-slate-400 hover:text-slate-600 transition-colors"
-                >
-                  Regenerar
-                </button>
-                <button
-                  onClick={onPromote}
-                  disabled={state.tag === 'promoting'}
-                  className="text-[13px] px-3.5 py-1.5 rounded-lg bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-50 transition-colors font-medium"
-                >
-                  {state.tag === 'promoting' ? 'Promoviendo…' : 'Promover →'}
-                </button>
-              </div>
-            </>
+          {state.tag === 'reviewing' && (
+            <GapResolutionPanel
+              suggestion={s}
+              state={state}
+              evidenceSnippets={evidenceSnippets}
+            />
           )}
           {state.tag === 'promoted' && (
             <div className="text-[13px] text-emerald-700 leading-relaxed">
@@ -848,28 +1260,34 @@ type SuggestionItemProps = {
   suggestion: Suggestion
   state: ItemStatus
   editedContent: string
+  evidenceSnippets: EvidenceSnippet[]
   focused?: boolean
   onGenerateDraft: () => void
   onPromote: () => void
   onIgnore: () => void
   onUndo: () => void
+  onClose: () => void
   onEditContent: (v: string) => void
 }
 
 function ItemActions({
+  suggestion,
   state,
   onIgnore,
   onUndo,
   onGenerateDraft,
   onPromote,
   compact = false,
+  onClose,
 }: {
+  suggestion: Suggestion
   state: ItemStatus
   onIgnore: () => void
   onUndo: () => void
   onGenerateDraft: () => void
   onPromote: () => void
   compact?: boolean
+  onClose: () => void
 }) {
   const btnBase = compact
     ? 'text-[12px] px-2 py-1 rounded-md transition-colors'
@@ -888,7 +1306,7 @@ function ItemActions({
           onClick={onGenerateDraft}
           className={`${btnBase} border border-slate-200 text-slate-700 hover:bg-slate-50 hover:border-slate-300 font-medium`}
         >
-          {compact ? 'Draft' : 'Generar draft'}
+          {compact ? 'Ver' : 'Ver contexto'}
         </button>
       </>
     )
@@ -902,32 +1320,10 @@ function ItemActions({
     )
   }
 
-  if (state.tag === 'draft_ready' && !compact) {
+  if (state.tag === 'reviewing') {
     return (
-      <>
-        <button onClick={onIgnore} className={`${btnBase} text-slate-400 hover:text-slate-600`}>
-          Cancelar
-        </button>
-        <button onClick={onGenerateDraft} className={`${btnBase} text-slate-400 hover:text-slate-600`}>
-          Regenerar
-        </button>
-        <button
-          onClick={onPromote}
-          className={`${btnBase} bg-slate-900 text-white hover:bg-slate-700 font-medium`}
-        >
-          Promover →
-        </button>
-      </>
-    )
-  }
-
-  if (state.tag === 'draft_ready' && compact) {
-    return (
-      <button
-        onClick={onPromote}
-        className={`${btnBase} bg-slate-900 text-white hover:bg-slate-700 font-medium`}
-      >
-        Promover →
+      <button onClick={onClose} className={`${btnBase} text-slate-400 hover:text-slate-600`}>
+        Cerrar
       </button>
     )
   }
@@ -935,7 +1331,7 @@ function ItemActions({
   if (state.tag === 'promoting') {
     return (
       <span className={`${btnBase} text-slate-400 animate-pulse px-3`}>
-        Promoviendo…
+        Agregando…
       </span>
     )
   }
@@ -1184,7 +1580,7 @@ export default function ImprovementPage() {
 
         const edits: Record<string, string> = {}
         for (const s of serverSuggestions) {
-          if (s.draft_content) edits[s.topic] = s.draft_content
+          if (s.draft_content) edits[s.topic] = sanitizeDraftContent(s.draft_content)
         }
         if (Object.keys(edits).length > 0) setDraftEdits(edits)
 
@@ -1267,20 +1663,7 @@ export default function ImprovementPage() {
       setItemState(topic, { tag: 'validation_error', reason: validation.reason! })
       return
     }
-    setItemState(topic, { tag: 'generating' })
-    try {
-      const res = await fetch(`${API_URL}/internal/action-suggestions/draft`, {
-        method: 'POST',
-        headers: HEADERS,
-        body: JSON.stringify({ topic }),
-      })
-      if (!res.ok) throw new Error()
-      const draft: Draft = await res.json()
-      setItemState(topic, { tag: 'draft_ready', draft })
-      setDraftEdits(prev => ({ ...prev, [topic]: draft.draft_content }))
-    } catch {
-      setItemState(topic, { tag: 'error', message: 'No se pudo generar el borrador.' })
-    }
+    setItemState(topic, { tag: 'reviewing' })
   }
 
   async function handlePromote(suggestion: Suggestion) {
@@ -1345,6 +1728,7 @@ export default function ImprovementPage() {
       suggestion: s,
       state: getState(s.topic),
       editedContent: draftEdits[s.topic] ?? '',
+      evidenceSnippets: backendEvidenceSnippets(s),
       focused: s.topic === focusTopic,
       onGenerateDraft: () => handleGenerateDraft(s.topic),
       onPromote: () => handlePromote(s),
@@ -1363,7 +1747,7 @@ export default function ImprovementPage() {
           <div className="mb-5">
             <h1 className="text-xl font-semibold text-slate-900 tracking-tight">Gaps de conocimiento</h1>
             <p className="text-[14px] text-slate-500 mt-1 leading-relaxed">
-              Consultas sin respuesta o con cobertura incompleta. Generá borradores y promovelos para cerrar los gaps.
+              Consultas sin respuesta o con cobertura incompleta. Revisá la propuesta, editála si hace falta y agregala al conocimiento para cerrar el gap.
             </p>
             <p className="text-[12px] text-slate-400 mt-2">
               Estimación actual: cobertura nula = 3 min perdidos por consulta, cobertura parcial = 2 min.

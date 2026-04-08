@@ -16,6 +16,9 @@ class ActionSuggestion(BaseModel):
     ready_for_draft: bool
     draft_content: str | None = None
     last_seen_at: str = ""
+    evidence_snippets: list[str] = []
+    evidence_documents: list[str] = []
+    evidence_document_ids: list[str] = []
     minutes_lost_per_occurrence: int
     estimated_time_lost_minutes: int
     estimated_time_saved_if_resolved_minutes: int
